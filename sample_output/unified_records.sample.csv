@@ -1,1 +1,4 @@
 id,source,type,value
+1,example_api_source,product,"Widget A"
+2,example_api_source,product,"Widget B"
+3,example_html_source,article,"Sample headline"
