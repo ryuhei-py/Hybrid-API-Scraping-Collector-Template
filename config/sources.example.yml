@@ -1,0 +1,39 @@
+# Example sources configuration
+# Copy this file to config/sources.yml and adjust values.
+
+- id: example_api_source
+  api:
+    enabled: true
+    base_url: "https://api.example.com/items"
+    method: "GET"
+    params:
+      api_key: "${API_KEY}"  # pulled from environment
+    headers:
+      Authorization: "Bearer ${API_TOKEN}"
+    json_key_map:
+      id: "data.id"
+      name: "data.attributes.name"
+  html:
+    enabled: false
+  mapping:
+    unified_fields:
+      external_id: "id"
+      title: "name"
+    field_types:
+      external_id: "string"
+      title: "string"
+
+- id: example_html_source
+  html:
+    enabled: true
+    url: "https://example.com/products"
+    selectors:
+      items: ".product-card"
+      title: ".product-card__title::text"
+      price: ".product-card__price::text"
+  mapping:
+    unified_fields:
+      title: "title"
+      price: "price"
+    field_types:
+      price: "float"
