@@ -210,3 +210,6 @@ __marimo__/
 .idea/
 *.sqlite3
 data/
+
+#developer note
+dev_note/
