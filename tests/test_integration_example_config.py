@@ -1,10 +1,10 @@
 import json
+import sys
 from pathlib import Path
 
-import pytest
 import requests
 
-import hybrid_collector.cli as cli
+import hybrid_collector.cli as collector_cli
 
 
 class DummyResponse:
@@ -53,9 +53,6 @@ def _fake_session_request(self, method, url, **kwargs):
 
     return DummyResponse(status_code=404, text="not found")
 
-
-import sys
-
 def _run_cli(argv):
     """
     For CLIs where main() takes no argv argument and reads sys.argv.
@@ -65,7 +62,7 @@ def _run_cli(argv):
     sys.argv = ["hybrid-collector", *argv]
     try:
         try:
-            ret = cli.main()
+            ret = collector_cli.main()
         except SystemExit as e:
             ret = e.code
     finally:

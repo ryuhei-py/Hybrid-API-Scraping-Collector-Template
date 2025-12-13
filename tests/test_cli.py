@@ -1,7 +1,6 @@
 import sys
 from pathlib import Path
 
-import pytest
 
 
 def test_dry_run_skips_export(monkeypatch, tmp_path):

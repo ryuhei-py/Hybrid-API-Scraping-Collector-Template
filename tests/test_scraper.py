@@ -1,8 +1,6 @@
-import pytest
-import requests
 
 from hybrid_collector.config import HtmlConfig, MappingConfig, SourceConfig
-from hybrid_collector.scraper import HtmlScraper, ScrapeError, fetch_html
+from hybrid_collector.scraper import HtmlScraper, fetch_html
 
 
 def _build_source(selectors: dict[str, str], url: str = "https://example.com/{slug}") -> SourceConfig:

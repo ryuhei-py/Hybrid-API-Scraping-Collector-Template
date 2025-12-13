@@ -1,6 +1,5 @@
 import csv
 import json
-from pathlib import Path
 
 from hybrid_collector.exporter import export_to_csv, export_to_json
 
