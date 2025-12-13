@@ -75,7 +75,11 @@ def _build_api(api_data: dict[str, Any] | None) -> ApiConfig | None:
     if not isinstance(api_data, dict):
         raise ConfigError("api must be a mapping object")
 
-    enabled = bool(api_data.get("enabled", False))
+    enabled_raw = api_data.get("enabled", True)
+    if not isinstance(enabled_raw, bool):
+        raise ConfigError("api.enabled must be a boolean")
+    enabled = enabled_raw
+
     method = api_data.get("method") or "GET"
     base_url = api_data.get("base_url")
     params = api_data.get("params")
@@ -84,9 +88,6 @@ def _build_api(api_data: dict[str, Any] | None) -> ApiConfig | None:
 
     if enabled and not base_url:
         raise ConfigError("api.base_url is required when api is enabled")
-
-    if not isinstance(method, str):
-        raise ConfigError("api.method must be a string")
 
     if headers is not None and not isinstance(headers, dict):
         raise ConfigError("api.headers must be a mapping if provided")
@@ -113,7 +114,11 @@ def _build_html(html_data: dict[str, Any] | None) -> HtmlConfig | None:
     if not isinstance(html_data, dict):
         raise ConfigError("html must be a mapping object")
 
-    enabled = bool(html_data.get("enabled", False))
+    enabled_raw = html_data.get("enabled", True)
+    if not isinstance(enabled_raw, bool):
+        raise ConfigError("html.enabled must be a boolean")
+    enabled = enabled_raw
+
     url = html_data.get("url")
     selectors = html_data.get("selectors")
 
