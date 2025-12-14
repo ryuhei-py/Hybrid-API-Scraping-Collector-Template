@@ -1,224 +1,289 @@
 # Testing
-This document describes how to verify, maintain, and extend the Hybrid-API-Scraping-Collector-Template using automated tests.
 
-## How to run the tests
-This section explains how to execute the test suite.
+This repository is designed to be verifiable in a deterministic way. The test suite runs **offline by default** by mocking HTTP requests, enabling reliable and reproducible verification in CI and on local machines.
 
-### One-time setup
-From the project root:
+---
+
+## Scope
+
+### Covered by this test suite
+- Configuration parsing and validation (including environment variable expansion)
+- API client behavior
+  - JSON-path extraction
+  - retry policy for transient failures (5xx / request exceptions)
+  - fail-fast behavior for non-retryable failures (4xx)
+- HTML fetching and parsing
+  - CSS selector extraction
+  - attribute extraction via `::attr(name)`
+  - retry policy for transient failures (5xx / request exceptions)
+  - fail-fast behavior for non-retryable failures (4xx)
+- Normalization (mapping API/HTML outputs into unified records)
+- Type casting (`int`, `float`) for unified fields
+- Validation (required fields must be present and non-empty)
+- Exporters (CSV + JSON)
+- CLI wiring (including `--dry-run`)
+- Offline end-to-end pipeline using `config/sources.example.yml` (mocked HTTP)
+
+### Not covered (intentionally out of scope)
+- Live scraping validation against real websites
+- Performance/load testing at scale
+- Enforcement of website ToS/robots policies (operational responsibility)
+
+---
+
+## Prerequisites
+
+- Python version: use a version supported by CI (see `.github/workflows/ci.yml`)
+- `pip` and `venv`
+- Tools used for local verification:
+  - `ruff`
+  - `pytest`
+
+---
+
+## Environment setup
+
+### Create and activate a virtual environment
+
+**Windows (PowerShell)**
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+````
+
+**macOS/Linux**
 
 ```bash
 python -m venv .venv
-# Windows: .venv/Scripts/activate
-# macOS / Linux: source .venv/bin/activate
+source .venv/bin/activate
+```
 
+### Install dependencies
+
+```bash
+python -m pip install -U pip
 pip install -r requirements.txt
 ```
 
-### Run all tests
-From the project root:
+Optional (editable install):
 
 ```bash
-pytest
+pip install -e .
 ```
 
-This will discover all tests under `tests/`, execute them with pytest, and print a summary with pass/fail counts.
+---
 
-### Run a subset of tests
-You can run tests for a specific module or keyword:
+## Static checks
+
+### Ruff (lint)
+
+Run lint locally:
 
 ```bash
-# Run only config-related tests
-pytest tests/test_config.py
-
-# Run tests whose names contain "cli"
-pytest -k "cli"
+ruff check src tests
 ```
 
-This is useful when you are iterating on a specific part of the pipeline.
+This is the same lint gate enforced by CI. If this command passes locally, it should match CI behavior.
 
-### Optional: show verbose output
-Use verbose output to see each test name:
+---
+
+## Run tests
+
+### Run the full test suite
 
 ```bash
-pytest -v
+pytest -q
 ```
 
-This prints each test case name explicitly, which is helpful when debugging or demonstrating the suite to clients.
+You should see a clean summary such as:
 
-## Test suite structure
-This section describes how tests are organized to mirror pipeline components.
+* `18 passed` (the number may change as tests evolve)
 
-Tests live under `tests/` and typically follow this pattern:
+### Run a specific test module
 
-```text
-tests/
-  test_config.py        # Configuration loading and validation
-  test_api_client.py    # API client behavior (URL build, headers, errors)
-  test_html_scraper.py  # HTML scraping and selector behavior
-  test_normalizer.py    # Raw → unified record mapping and type coercion
-  test_validator.py     # Data quality and schema-level checks
-  test_exporter.py      # CSV/JSON export behavior
-  test_cli.py           # End-to-end CLI interactions (happy/failed paths)
-  conftest.py           # Shared fixtures (sample configs, sample HTML, etc.)
+```bash
+pytest tests/test_config.py -q
+pytest tests/test_api_client.py -q
+pytest tests/test_scraper.py -q
+pytest tests/test_integration_example_config.py -q
 ```
 
-Any file starting with `test_` or ending with `_test.py` will be discovered as a test.
+### Run by pattern
 
-## Unit tests by component
-This section outlines expected coverage for each module.
-
-### Config loader (test_config.py)
-Purpose: ensure configuration loading is robust so misconfigured YAML does not silently break your pipeline.
-
-Typical scenarios:
-
-- Happy path: a valid `config/sources.yml` loads successfully and required sections are present.
-- Missing file: referencing a non-existent config path raises a clear exception.
-- Invalid YAML: malformed YAML raises a parsing error.
-- Missing required keys: missing fields trigger a validation error.
-- Environment variable expansion: `${API_TOKEN}` expands correctly; missing env vars fail with a helpful message.
-
-### API client (test_api_client.py)
-Purpose: verify the API client builds requests correctly and handles errors cleanly.
-
-Typical scenarios:
-
-- URL building: base URL and parameters produce the correct final URL.
-- Headers and auth: headers from config (including env-var references) are applied.
-- Successful responses: a mocked 200 JSON response is parsed.
-- Error responses: 4xx / 5xx raise a well-defined exception.
-- Timeouts / connection errors: network issues surface clearly, not as generic exceptions.
-
-Implementation note: monkeypatch `requests` calls to avoid real network traffic.
-
-### HTML scraper (test_html_scraper.py)
-Purpose: ensure scraping logic is stable even when HTML is imperfect.
-
-Typical scenarios:
-
-- Basic extraction: sample HTML and selectors yield expected values.
-- Missing elements: absent elements return `None` or a safe default.
-- Multiple matches: list handling or first-match selection is correct.
-- Whitespace handling: text is trimmed appropriately.
-
-Implementation note: use small HTML samples or fixture files; avoid real HTTP requests.
-
-### Normalizer (test_normalizer.py)
-Purpose: confirm mapping converts heterogeneous results into a unified record.
-
-Typical scenarios:
-
-- Simple mapping: expected keys and values appear in the unified record.
-- Type conversions: strings like `"19.99"` or `"5"` cast to `float` or `int`.
-- Defaults and fallback: missing fields become `None` when intended.
-- Field renaming: source fields map to unified fields correctly.
-
-### Validator (test_validator.py)
-Purpose: enforce data quality rules at the unified-record level.
-
-Typical scenarios:
-
-- Valid record passes with no issues.
-- Missing required fields produce specific issue messages.
-- Type or range violations are flagged.
-- Multiple problems yield multiple issues, not just the first one.
-
-### Exporter (test_exporter.py)
-Purpose: verify unified records are written correctly and safely.
-
-Typical scenarios:
-
-- CSV export: file exists, header row contains expected columns, row count matches records.
-- JSON export: valid JSON with the correct number of records.
-- Empty input: exporting empty lists does not crash.
-- Write errors: missing or unwritable target directories raise clear errors.
-
-Implementation note: use pytest’s `tmp_path` fixture to isolate filesystem writes.
-
-### CLI (test_cli.py)
-Purpose: ensure the end-to-end entrypoint behaves correctly for typical user flows.
-
-Typical scenarios:
-
-- Happy path: valid config and output directory run end to end.
-- Dry-run mode: pipeline runs but does not write files; console summarizes processed sources.
-- Invalid config path: fails fast with a helpful error.
-- Invalid output directory: clear error when writing is impossible.
-
-Implementation note: prefer calling the main CLI function directly and use `capsys`/`caplog` to inspect output.
-
-## Fixtures and test data
-This section describes shared fixtures and sample assets.
-
-Shared fixtures live in `tests/conftest.py`. Typical fixtures include:
-
-- Sample config: a minimal `sources.yml` with fake URLs and both API/HTML sources.
-- Sample raw responses: fake API JSON payloads and small HTML snippets.
-- Sample unified records: representative “ideal” outputs.
-- Environment variables: temporary settings so tests do not depend on the developer’s local `.env`.
-
-Test data files, if any, should be placed under a dedicated directory:
-
-```text
-tests/data/
-  sample_sources.yml
-  sample_api_response.json
-  sample_page.html
+```bash
+pytest -k "retry" -q
 ```
 
-This keeps test artifacts organized and explicit.
+---
 
-## Extending the test suite
-This section offers a workflow for adding new coverage.
+## Test design: layers and guarantees
 
-When adding new behavior (new source type, validation rule, or export format), follow this workflow:
+### 1) Unit tests (pure logic, no HTTP)
 
-1. Add or update tests first: define expected behavior with clear, small cases.
-2. Implement or modify the feature.
-3. Run tests locally:
+These tests validate behavior without network access:
 
-    ```bash
-    pytest
-    ```
+* **Config parsing and validation**
 
-4. Refactor if necessary, keeping tests green.
-5. Commit with a clear message (e.g. “Add validator rule for negative prices” or “Support JSONL export and tests”).
+  * YAML structure validation
+  * required keys and basic shape checks
+  * recursive expansion of environment variables in strings (e.g., `${API_TOKEN}`)
+* **Normalization**
 
-## Continuous integration (CI)
-This section explains how CI typically runs the suite.
+  * mapping expressions (`api.*`, `html.*`) into unified fields
+  * type casting via `field_types` (`int`, `float`)
+  * cast failures produce `None` (no exceptions)
+* **Validation**
 
-On each push or pull request, a typical CI flow will:
+  * required fields must exist and be non-empty (`None` and `""` are treated as missing)
 
-- Set up Python.
-- Install dependencies:
+### 2) HTTP behavior tests (mocked)
 
-  ```bash
-  pip install -r requirements.txt
-  ```
+These tests monkeypatch HTTP calls so **no real requests** are sent:
 
-- Run pytest.
+* **API client**
 
-This provides automatic verification of contributions and confidence that the template remains stable.
+  * retries on request exceptions and 5xx responses
+  * fail-fast on 4xx responses
+  * JSON-path extraction supports dot paths and list indices (e.g., `a.b.0.c`)
+  * retries are immediate (no backoff/jitter)
+* **HTML scraping**
 
-You can extend CI later with coverage reporting, linting (Ruff/flake8), or type checking (mypy/pyright).
+  * retries on request exceptions and 5xx responses
+  * fail-fast on 4xx responses
+  * extraction behavior:
 
-## Using tests as a portfolio asset
-This section highlights how tests support client work.
+    * first-match selector strategy
+    * text extraction via `get_text(strip=True)`
+    * attribute extraction via `::attr(name)`
 
-For client work (e.g. on Upwork), the test suite is a selling point:
+### 3) Integration-style test (offline end-to-end)
 
-- A clean `tests/` directory.
-- Clear, readable test cases.
-- pytest output showing all tests passing.
+`tests/test_integration_example_config.py` runs the full pipeline using:
 
-This demonstrates reliability and professional development standards. When you adapt this template for a specific client project, extend the tests to cover the client’s business rules.
+* `config/sources.example.yml`
 
-## Summary
-This section recaps the key points about testing in this template.
+The test patches HTTP at the requests layer so the run remains offline and deterministic, then validates:
 
-- Tests are organized by component (config, API, HTML, normalizer, validator, exporter, CLI).
-- Running `pytest` from the project root executes the entire suite.
-- Fixtures provide stable sample data and environment settings.
-- When you change or extend the pipeline, update tests together with the code.
-- A solid test suite is both a technical and business advantage when presenting this template as a professional asset.
+* the pipeline completes successfully
+* unified records contain expected keys
+* exporters produce outputs under the test’s temporary directory (when not a dry-run path)
+
+This provides a practical, CI-safe proof that the modules integrate correctly.
+
+---
+
+## CI parity
+
+CI is defined in:
+
+* `.github/workflows/ci.yml`
+
+CI runs:
+
+* `ruff check src tests`
+* `pytest -q`
+
+To reproduce CI locally, run those same commands from the repository root:
+
+```bash
+ruff check src tests
+pytest -q
+```
+
+---
+
+## Optional: Coverage (local only)
+
+Coverage is not required by CI, but can be useful during development.
+
+```bash
+python -m pip install coverage
+coverage run -m pytest
+coverage report -m
+```
+
+When interpreting coverage, prioritize core modules:
+
+* `src/hybrid_collector/config.py`
+* `src/hybrid_collector/api_client.py`
+* `src/hybrid_collector/scraper.py`
+* `src/hybrid_collector/normalizer.py`
+* `src/hybrid_collector/cli.py`
+
+---
+
+## Common failures and troubleshooting
+
+### Import/module resolution errors
+
+Symptoms:
+
+* `ModuleNotFoundError` when running tests
+
+Fix:
+
+* ensure you are in the repository root
+* install dependencies: `pip install -r requirements.txt`
+* if needed, use editable install: `pip install -e .`
+
+### Python version mismatch
+
+Symptoms:
+
+* CI passes but local fails (or vice versa)
+
+Fix:
+
+* align your local interpreter with a CI-tested version (see `.github/workflows/ci.yml`)
+* recreate the venv after switching Python versions
+
+### Network-related confusion
+
+The test suite is offline by design.
+
+However, running the CLI directly can perform real network requests depending on your config file. If you need a deterministic verification run, rely on the tests.
+
+### Config-related failures
+
+Key constraints enforced by config validation:
+
+* The config file is a **YAML list** of sources (not a top-level dict such as `sources:`)
+* Each source requires:
+
+  * `id`
+  * `mapping.unified_fields`
+* Each source must include at least one of:
+
+  * `api` section (can be disabled via `enabled: false`)
+  * `html` section (can be disabled via `enabled: false`)
+* `api.base_url` and `html.url` are required only if their section is enabled
+
+---
+
+## Quality gates before publishing changes
+
+Run these locally before pushing updates:
+
+```bash
+ruff check src tests
+pytest -q
+```
+
+Also confirm:
+
+* documentation matches the implemented configuration schema
+* repository hygiene (do not commit `.venv/`, cache directories, or local output artifacts)
+
+---
+
+## Appendix: Test file map
+
+* `tests/test_config.py` — config parsing, env expansion, and schema validation
+* `tests/test_api_client.py` — API retries, 4xx/5xx behavior, JSON-path extraction
+* `tests/test_scraper.py` — HTML retries, selector extraction, `::attr(...)` handling
+* `tests/test_normalizer.py` — unified field mapping and type casting
+* `tests/test_validator.py` — required-field checks
+* `tests/test_exporter.py` — CSV/JSON output format correctness
+* `tests/test_cli.py` — CLI behavior (`--dry-run`, pipeline wiring)
+* `tests/test_integration_example_config.py` — offline end-to-end pipeline using example config
+* `tests/test_scheduler_stub.py` — scheduling stub behavior

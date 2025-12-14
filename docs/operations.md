@@ -1,383 +1,668 @@
 # Operations
-This document describes how to run, schedule, and operate the Hybrid-API-Scraping-Collector-Template in practical environments.
 
-## Operational goals
-This section outlines the operational intent of the template.
+This document describes how to run and operate the Hybrid API + HTML Collector reliably: installation, configuration practices, execution workflows, scheduling, and practical troubleshooting. It is written to match the current implementation and CLI behavior.
 
-- **Easy to run locally** for quick experiments and client demos.
-- **Config-driven**, so you can adapt behavior by editing YAML instead of code.
-- **Schedulable**, so it can run unattended (e.g. once per day).
-- **Safe to extend**, with clear places to add new sources, outputs, or validations.
+---
 
-The template does not prescribe heavy deployment models (Kubernetes, Airflow); it offers a clean Python CLI to plug into your environment.
+## Table of Contents
 
-## Environments and prerequisites
-This section lists supported environments and system requirements.
+- [Operational overview](#operational-overview)
+- [Prerequisites](#prerequisites)
+- [Install and verify](#install-and-verify)
+- [Configuration operations](#configuration-operations)
+  - [Config file contract](#config-file-contract)
+  - [Environment variables](#environment-variables)
+  - [URL templating with context](#url-templating-with-context)
+  - [API configuration semantics](#api-configuration-semantics)
+  - [HTML configuration semantics](#html-configuration-semantics)
+  - [Normalization and validation semantics](#normalization-and-validation-semantics)
+- [Running the collector](#running-the-collector)
+  - [Common commands](#common-commands)
+  - [Dry-run mode](#dry-run-mode)
+  - [Outputs](#outputs)
+  - [Exit codes and failure behavior](#exit-codes-and-failure-behavior)
+- [Reliability controls](#reliability-controls)
+  - [Timeouts](#timeouts)
+  - [Retries](#retries)
+  - [No backoff or rate limiting](#no-backoff-or-rate-limiting)
+- [Logging and observability](#logging-and-observability)
+- [Scheduling](#scheduling)
+  - [Cron](#cron)
+  - [Windows Task Scheduler](#windows-task-scheduler)
+  - [GitHub Actions schedule](#github-actions-schedule)
+- [Operational safety and compliance](#operational-safety-and-compliance)
+- [Troubleshooting](#troubleshooting)
+- [Production hardening ideas](#production-hardening-ideas)
+- [Related documentation](#related-documentation)
 
-### Typical environments
-This subsection describes where the template is commonly run.
+---
 
-- **Local development**
-  - You develop, configure, and test everything on your own machine.
-  - Ideal for building Upwork portfolio projects or proofs of concept.
-- **Single server / VM / container**
-  - Optionally deploy the same project to a server or container.
-  - Schedule the CLI via cron or another scheduler.
-  - This is closer to a “production-style” setup.
+## Operational overview
 
-The code itself is environment-agnostic; you switch environments via different config files and environment variables.
+- **Execution model:** single-run CLI invocation (`python -m hybrid_collector.cli`). This project is not a long-running service.
+- **Per-source pipeline:**
+  1. Optional API fetch (if enabled)
+  2. Optional HTML fetch + parse (if enabled)
+  3. Normalize into unified fields using mapping rules
+  4. Validate required fields (simple “missing value” checks)
+  5. Export CSV + JSON (unless `--dry-run`)
+- **State:** no database and no incremental state. Each run produces output files.
+- **Network behavior:** the CLI performs real HTTP requests. The test suite is deterministic and mocks all HTTP calls.
 
-### System requirements
-This subsection lists required tools.
+---
 
-- Python **3.11+**
-- `git`
-- A virtual environment tool (`venv` recommended)
-- Network access to the APIs you call and the sites you scrape
+## Prerequisites
 
-## Configuration management
-This section covers how to manage YAML configs and secrets.
+- Python supported by `pyproject.toml`
+- Ability to reach the configured targets over the network (for real runs)
+- Authorization/permission to access the targets and collect the intended data
 
-### Config files
-This subsection explains where configuration lives.
+---
 
-All sources are defined in:
+## Install and verify
 
-```text
-config/sources.yml
-```
+### Create a virtual environment
 
-Recommended workflow:
-
-Start from the example:
-
-```bash
-cp config/sources.example.yml config/sources.yml
-```
-
-Edit `config/sources.yml` to:
-
-- Add or modify API endpoints.
-- Add or modify HTML URLs and selectors.
-- Define unified field mappings and types.
-
-For multiple environments, you can introduce:
-
-```text
-config/sources.dev.yml
-config/sources.staging.yml
-config/sources.prod.yml
-```
-
-Pass the appropriate path via `--config` (see CLI section).
-
-### Environment variables and .env
-This subsection explains how to keep secrets out of version control.
-
-Sensitive values (tokens, API keys, secrets) should not be hard-coded in `sources.yml`. Reference them with `${VAR_NAME}` and define them as environment variables.
-
-Example in YAML:
-
-```yaml
-api:
-  base_url: "https://api.example.com/products/{external_id}"
-  headers:
-    Authorization: "Bearer ${API_TOKEN}"
-```
-
-You can then set them via `.env`:
-
-```text
-# .env (never commit this file)
-API_TOKEN=your-real-token-here
-```
-
-Typical workflow:
+Linux/macOS:
 
 ```bash
-cp .env.example .env
-```
-
-Edit `.env` to add your real keys, then load environment variables before running the CLI (for example, with `python-dotenv` or by exporting them in your shell).
-
-Operational rule of thumb: config files define structure and non-sensitive defaults; `.env` and environment variables hold secrets.
-
-## Local development and one-off runs
-This section explains how to set up and execute the CLI locally.
-
-### Setup (once per machine)
-Run these commands to clone and set up the environment.
-
-```bash
-git clone https://github.com/ryuhei-py/Hybrid-API-Scraping-Collector-Template.git
-cd Hybrid-API-Scraping-Collector-Template
-
 python -m venv .venv
-# Windows: .venv/Scripts/activate
-# macOS / Linux: source .venv/bin/activate
+source .venv/bin/activate
+````
 
+Windows (PowerShell):
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+### Install dependencies
+
+Editable install (recommended while working on the repo):
+
+```bash
+pip install -e .
+```
+
+Alternatively:
+
+```bash
 pip install -r requirements.txt
 ```
 
-Then copy baseline configs:
+### Verify with offline tests (recommended)
+
+The test suite is designed to run without live network access:
 
 ```bash
-cp config/sources.example.yml config/sources.yml
-cp .env.example .env
+pytest -q
 ```
 
-Adjust `config/sources.yml` and `.env` to your needs.
-
-### Dry-run (no file output)
-Run the pipeline without writing files to validate configs.
+If you have Ruff installed (CI runs this):
 
 ```bash
-python -m hybrid_collector.cli \
-  --config config/sources.yml \
-  --output-dir sample_output \
-  --dry-run
+ruff check src tests
 ```
 
-Behavior:
+---
 
-- Loads config.
-- Calls APIs and HTML pages.
-- Normalizes and validates records.
-- Prints a summary to the console.
-- Does not write CSV/JSON files.
+## Configuration operations
 
-Dry-run is ideal for verifying URLs, selectors, mappings, and validation output before writing files.
+### Config file contract
 
-### Full run (with output)
-Run the pipeline and write outputs.
+The CLI reads a YAML file containing **a list of source entries** (top-level YAML must be a list).
 
-```bash
-python -m hybrid_collector.cli \
-  --config config/sources.yml \
-  --output-dir sample_output
+* Default config path (CLI): `config/sources.example.yml`
+* Recommended operational pattern:
+
+  * Keep `config/sources.example.yml` committed as a working reference.
+  * Create a local config for real targets (e.g., `config/sources.yml`) and keep it out of version control if it includes sensitive endpoints or tokens.
+
+A minimal source entry contains:
+
+* `id` (required)
+* `mapping` (required)
+* at least one of `api` or `html` (at least one must be present)
+
+Canonical examples live in:
+
+* `config/sources.example.yml` (recommended starting point)
+
+#### Minimal example (list-only contract)
+
+```yaml
+- id: "example_source"
+  api:
+    enabled: true
+    base_url: "https://example.com/api/items"
+    method: "GET"
+    params:
+      limit: 10
+    headers:
+      Authorization: "Bearer ${API_TOKEN}"
+    json_key_map:
+      item_id: "data.0.id"
+      price: "data.0.price"
+  html:
+    enabled: true
+    url: "https://example.com/items/{external_id}"
+    selectors:
+      title: "h1"
+      image_url: "img.hero::attr(src)"
+  mapping:
+    unified_fields:
+      id: "api.item_id"
+      price: "api.price"
+      title: "html.title"
+      image_url: "html.image_url"
+    field_types:
+      price: "float"
 ```
 
-Typical outputs:
+---
 
-- `sample_output/unified_records.csv`
-- `sample_output/unified_records.json`
+### Environment variables
 
-You can open the CSV in Excel or Google Sheets to inspect the unified schema.
+All strings in YAML are processed through environment-variable expansion using `os.path.expandvars()`.
 
-## Directory conventions
-This section lists important directories for operations.
+Common patterns:
 
-Key directories during operation:
+* Unix-style: `${API_TOKEN}` or `$API_TOKEN`
+* Windows-style: `%API_TOKEN%` (when applicable)
 
-- `config/` — main configuration file `sources.yml`.
-- `sample_output/` — default location for generated CSV/JSON. For production, point `--output-dir` elsewhere.
-- `tests/` — unit tests; important for safe changes.
-- `src/hybrid_collector/` — implementation modules; in operations, you typically call only the CLI.
-
-A common production pattern:
-
-- Keep the repo under a path like `/opt/hybrid-collector` or `C:/apps/hybrid-collector`.
-- Use a dedicated virtual environment in that directory.
-- Use a dedicated output directory (`/data/hybrid-collector-output` or similar) instead of `sample_output`.
-
-## Scheduling the collector
-This section shows how to run the CLI on a schedule.
-
-You can schedule the CLI with any external scheduler. The pseudo-documentation in `src/hybrid_collector/scheduler_stub.py` mirrors this section.
-
-### Cron (Linux / macOS)
-This subsection provides a cron example.
-
-Assuming:
-
-- Repo at `/opt/hybrid-collector`
-- Virtualenv at `/opt/hybrid-collector/.venv`
-- Config at `/opt/hybrid-collector/config/sources.yml`
-- Output at `/data/hybrid-collector-output`
-
-Example cron entry to run every day at 02:00:
+Linux/macOS:
 
 ```bash
-0 2 * * * cd /opt/hybrid-collector && \
-  . .venv/bin/activate && \
-  python -m hybrid_collector.cli \
-    --config config/sources.yml \
-    --output-dir /data/hybrid-collector-output \
-  >> /var/log/hybrid-collector.log 2>&1
+export API_TOKEN="..."
+```
+
+Windows (PowerShell):
+
+```powershell
+$env:API_TOKEN="..."
 ```
 
 Notes:
 
-- `cd` into the project directory before running.
-- Activate the virtual environment.
-- Redirect stdout/stderr to a log file for later inspection.
+* A `.env.example` is included as a reference.
+* The CLI does **not** automatically load a `.env` file. If you want `.env` loading, do it externally (shell tooling/CI) or add it explicitly in code.
 
-### Windows Task Scheduler
-This subsection shows a Task Scheduler example.
+---
 
-On Windows:
+### URL templating with context
 
-- Open Task Scheduler.
-- Create a Basic Task.
-- Configure a trigger (e.g. daily at 02:00).
-- Set the action to run `powershell.exe` with arguments similar to:
+Both API and HTML URLs support Python `str.format(**context)` substitution:
 
-```powershell
-# Example action (Program/script)
-C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+* API: `api.base_url` is formatted with context
+* HTML: `html.url` is formatted with context
 
-# Example arguments
--NoProfile -ExecutionPolicy Bypass -Command "
-  cd 'C:/apps/Hybrid-API-Scraping-Collector-Template';
-  & '.\.venv\Scripts\Activate.ps1';
-  python -m hybrid_collector.cli `
-    --config config/sources.yml `
-    --output-dir 'C:/data/hybrid-collector-output'
-"
+The CLI provides a minimal context per source:
+
+* `external_id` is set to the source `id`
+
+Example:
+
+```yaml
+- id: "user_123"
+  html:
+    enabled: true
+    url: "https://example.com/users/{external_id}"
+    selectors:
+      name: "h1"
+  mapping:
+    unified_fields:
+      external_id: "api.external_id"   # (example only; depends on your API mapping)
+      name: "html.name"
 ```
 
-Ensure the account running the task has:
+If a placeholder is missing, the run logs an error for that source and continues with other sources.
 
-- Access to the project directory.
-- Permission to write to the output directory.
-- Network access to APIs/sites.
+---
 
-## Logs, validation, and monitoring
-This section covers operational checks and logging practices.
+### API configuration semantics
 
-### Logging and outputs
-This subsection explains typical logging behavior.
+API settings are defined under the `api` block.
 
-By default, the CLI:
+Supported fields:
 
-- Prints a summary of processing to stdout (and stderr on errors).
-- Writes CSV/JSON to the configured output directory (when not in `--dry-run`).
+* `enabled` (bool, default `true`)
+* `base_url` (string; required if enabled)
+* `method` (string; default `"GET"`)
+* `params` (mapping; sent as query parameters)
+* `headers` (mapping; sent as HTTP headers)
+* `json_key_map` (mapping of output-field → JSON path)
 
-Recommended practices:
+JSON extraction rules:
 
-- Redirect CLI output to a log file in scheduled runs.
-- Keep at least: start/end timestamps, number of sources processed, number of records generated, and validation issue counts.
+* JSON paths are dot-delimited (e.g., `data.id`)
+* List indexing is supported using numeric segments (e.g., `items.0.id`)
+* Missing paths yield `None` (no exception)
 
-### Validation issues
-This subsection explains how to handle validation findings.
+Important operational detail:
 
-The `validator.py` module returns issues for each record that fails basic checks. Operationally, you should:
+* `json_key_map` produces an **API result dictionary** whose keys are used by normalization.
+* In mapping expressions, `api.<key>` refers to keys produced by `json_key_map` (not to raw JSON paths).
 
-- Log validation issues clearly (record index, field, message).
-- Periodically review them to detect broken selectors, API contract changes, or upstream data quality problems.
+Limitations to be aware of:
 
-### Simple health checks
-This subsection lists quick checks for scheduled runs.
+* The API client sends `params` as query parameters. It does not currently support request bodies (`json=`/`data=`), even if `method` is set to `"POST"`.
 
-In a production-style setup, you might:
+---
 
-- Verify that the CSV file was written and is non-empty.
-- Check that the number of records is within an expected range.
-- Raise an alert (email/Slack) if no records are produced or validation issues spike suddenly.
+### HTML configuration semantics
 
-## Change management workflow
-This section describes a safe workflow for making changes.
+HTML settings are defined under the `html` block.
 
-When making changes (new sources, new mappings, new logic), a safe workflow is:
+Supported fields:
 
-1. Update configuration
-   - Edit `config/sources.yml`.
-   - If introducing new secrets, update `.env` (and never commit it).
-2. Run tests
+* `enabled` (bool, default `true`)
+* `url` (string; required if enabled)
+* `selectors` (mapping of output-field → CSS selector)
 
-    ```bash
-    pytest
-    ```
+Selector rules:
 
-3. Run a local dry-run
+* Selectors are executed with BeautifulSoup’s `select()` (soupsieve CSS selectors).
+* Only the **first match** is used.
+* If no match exists, the extracted value is `None`.
+* Supported selector extension: `::attr(name)` to extract an attribute value.
 
-    ```bash
-    python -m hybrid_collector.cli \
-      --config config/sources.yml \
-      --output-dir sample_output \
-      --dry-run
-    ```
+Examples:
 
-4. Inspect logs and validation messages
-   - Fix selectors, mappings, or types if necessary.
-5. Run a full local run
-   - Confirm that CSV/JSON output looks correct.
-6. Deploy changes
-   - Pull the updated code/config onto the server.
-   - Restart or wait for the next scheduled run.
+```yaml
+selectors:
+  title: "h1"
+  image_url: "img.hero::attr(src)"
+```
 
-This mirrors typical operational practices in client projects and looks professional in code reviews.
+Limitations to be aware of:
+
+* Only `::attr(name)` is supported. There is no `::text` pseudo-syntax; text extraction uses `get_text(strip=True)` automatically.
+* The CLI does not currently allow configuring HTML request headers via YAML. HTML requests use default `requests` behavior unless you modify the code.
+
+---
+
+### Normalization and validation semantics
+
+#### Mapping (`mapping.unified_fields`)
+
+Normalization builds unified records using expressions of the form:
+
+* `api.<key>` → read from API result dict (`json_key_map` output)
+* `html.<key>` → read from HTML parsed dict (`selectors` output)
+
+Example:
+
+```yaml
+mapping:
+  unified_fields:
+    id: "api.item_id"
+    title: "html.title"
+    price: "api.price"
+```
+
+If the referenced side is missing/disabled or a key is not present, the value becomes `None`.
+
+#### Type conversion (`mapping.field_types`)
+
+Optional `field_types` supports:
+
+* `int`
+* `float`
+
+Conversion failures yield `None` (no exception).
+
+#### Validation behavior (current CLI)
+
+For each source record, the CLI treats **all unified field keys** as required.
+
+A required field is considered missing if:
+
+* the value is `None`, or
+* the value is `""` (empty string)
+
+Validation results are reported to stdout, but validation does not currently change the process exit code.
+
+---
+
+## Running the collector
+
+### Common commands
+
+Run using the default example config and default output directory:
+
+```bash
+python -m hybrid_collector.cli
+```
+
+Run with an explicit config path:
+
+```bash
+python -m hybrid_collector.cli --config config/sources.example.yml
+```
+
+Write outputs to a custom directory:
+
+```bash
+python -m hybrid_collector.cli --config config/sources.example.yml --output-dir output
+```
+
+Recommended: isolate each run into a timestamped folder.
+
+Linux/macOS:
+
+```bash
+ts="$(date +%Y%m%d_%H%M%S)"
+python -m hybrid_collector.cli --config config/sources.example.yml --output-dir "output/runs/$ts"
+```
+
+Windows (PowerShell):
+
+```powershell
+$ts = Get-Date -Format "yyyyMMdd_HHmmss"
+python -m hybrid_collector.cli --config config\sources.example.yml --output-dir "output\runs\$ts"
+```
+
+---
+
+### Dry-run mode
+
+Dry-run executes fetch → parse → normalize → validate, but skips export:
+
+```bash
+python -m hybrid_collector.cli --config config/sources.example.yml --dry-run
+```
+
+Note: dry-run still makes real HTTP requests. Use `pytest -q` for deterministic, offline verification.
+
+---
+
+### Outputs
+
+When not in dry-run, the CLI writes two files into `--output-dir`:
+
+* `unified_records.csv`
+* `unified_records.json`
+
+CSV specifics:
+
+* The header is the union of all keys across all produced records.
+* Field order is preserved by first appearance across records (insertion order).
+
+JSON specifics:
+
+* UTF-8 output with `ensure_ascii=false` and `indent=2` for readability.
+
+---
+
+### Exit codes and failure behavior
+
+Current CLI behavior is intentionally simple:
+
+* **Exit code `1`**: configuration load failure (e.g., file not found, YAML invalid, required fields missing).
+* **Exit code `0`**: normal completion (even if some sources fail or validation issues exist).
+
+Per-source runtime failures:
+
+* If a source raises an exception during API fetch or HTML fetch/parse, the CLI logs:
+
+  * `[error] Source '<id>' failed: ...`
+* That source is skipped and the run continues with remaining sources.
+* Outputs contain only the records from sources that completed successfully.
+
+Validation:
+
+* Validation issues are printed as:
+
+  * `[validation] Issues found: ...`
+* Validation does not currently fail the run.
+
+Operational recommendation (automation):
+
+* If you require strict failure semantics, treat any `[error]` log line or any `[validation] Issues found` as a pipeline failure in your scheduler/CI wrapper.
+
+---
+
+## Reliability controls
+
+### Timeouts
+
+Defaults (as implemented):
+
+* API requests: `timeout=10.0` seconds
+* HTML fetch: `timeout=10.0` seconds
+
+These are not currently configurable via YAML in the CLI path.
+
+### Retries
+
+Defaults (as implemented):
+
+* API requests: `max_retries=3`
+* HTML fetch: `max_retries=3`
+
+Retry triggers:
+
+* `requests` network exceptions (e.g., connection errors)
+* HTTP **5xx** responses
+
+No retry on:
+
+* HTTP **4xx** responses (treated as fatal for that request)
+
+### No backoff or rate limiting
+
+This project does not implement:
+
+* exponential backoff
+* jitter
+* per-host throttling
+* special handling for 429 responses
+
+Operational guidance:
+
+* Schedule conservatively.
+* Keep request volume low.
+* Prefer off-peak windows.
+* If you need throttling/backoff, implement it externally (scheduler spacing) or extend the code.
+
+---
+
+## Logging and observability
+
+The CLI emits operational messages to stdout/stderr with clear prefixes:
+
+* `[config error] ...` (stderr, exits 1)
+* `[error] Source '<id>' failed: ...` (stderr, continues)
+* `[validation] Issues found: ...` or `[validation] No issues` (stdout)
+* `[dry-run] Skipping export` (stdout)
+* `[export] Wrote N records to ...` (stdout)
+
+Capture logs for auditing/debugging:
+
+Linux/macOS:
+
+```bash
+python -m hybrid_collector.cli --config config/sources.yml --output-dir output > logs/run.log 2>&1
+```
+
+Windows (PowerShell):
+
+```powershell
+python -m hybrid_collector.cli --config config\sources.yml --output-dir output *> logs\run.log
+```
+
+---
+
+## Scheduling
+
+The recommended operational model is external scheduling of the CLI.
+
+### Cron
+
+Example (daily at 02:30):
+
+```cron
+30 2 * * * cd /path/to/repo && . .venv/bin/activate && python -m hybrid_collector.cli --config config/sources.yml --output-dir output >> logs/run.log 2>&1
+```
+
+### Windows Task Scheduler
+
+High-level approach:
+
+* Create a task that runs `powershell.exe`
+* Activate the venv and execute the CLI
+* Redirect output to logs
+
+Example script (conceptual):
+
+```powershell
+cd C:\path\to\repo
+.\.venv\Scripts\Activate.ps1
+python -m hybrid_collector.cli --config config\sources.yml --output-dir output *> logs\run.log
+```
+
+### GitHub Actions schedule
+
+Using GitHub Actions as a scheduler can work when:
+
+* targets permit automated access
+* tokens are stored in GitHub Secrets
+* you keep frequency conservative (no built-in rate limiting)
+
+Prefer low frequency schedules unless you add throttling/backoff.
+
+---
+
+## Operational safety and compliance
+
+Operate responsibly:
+
+* Ensure permission and a valid purpose for collection.
+* Respect target terms, robots guidance, and access policies.
+* Avoid collecting personal or sensitive data unless required and handled appropriately.
+* Keep request volume minimal and scheduling conservative.
+
+See: `docs/SECURITY_AND_LEGAL.md`
+
+---
 
 ## Troubleshooting
-This section lists common issues and remediation steps.
 
-### Configuration errors
-This subsection covers problems with YAML or missing keys.
+### Config file not found / invalid YAML
 
 Symptoms:
 
-- CLI exits immediately with a configuration error.
-- Traceback mentions missing keys or invalid types.
+* `[config error] Config file not found: ...`
+* `[config error] Configuration file must contain a list of sources`
+* `[config error] ... missing required ...`
 
-Actions:
+Fixes:
 
-- Check `config/sources.yml` for typos.
-- Compare against `config/sources.example.yml`.
-- Ensure indentation is correct (YAML is sensitive to this).
+* Verify the path passed to `--config`
+* Validate YAML syntax
+* Ensure top-level YAML is a list (`- id: ...`)
 
-### Network / API errors
-This subsection covers HTTP or connectivity failures.
-
-Symptoms:
-
-- Timeouts, connection errors, or HTTP 4xx/5xx status codes.
-- CLI logs repeated retries or early failure.
-
-Actions:
-
-- Verify API base URL and parameters.
-- Check that your API keys are correctly set in `.env` and picked up by the process.
-- Make sure you are not exceeding provider rate limits.
-- Use `--dry-run` while debugging to avoid unnecessary data writes.
-
-### HTML scraping failures
-This subsection addresses selector or DOM issues.
+### Missing URL template keys
 
 Symptoms:
 
-- Extracted values are `None` or empty for some fields.
-- Validation issues show many missing HTML-based fields.
+* API: `Missing context key '...' for URL formatting`
+* HTML: `Missing context key '...' for URL formatting`
 
-Actions:
+Fixes:
 
-- Inspect the target pages in a browser.
-- Confirm that CSS selectors in `selectors` still match the DOM.
-- Adjust selectors in `config/sources.yml`.
-- Run a local dry-run to verify fixes.
+* The CLI provides `{external_id}` only.
+* Remove other placeholders or extend the CLI context builder in code.
 
-### Output / file permission issues
-This subsection covers file system problems.
+### 401/403 responses
 
-Symptoms:
+Common causes:
 
-- CSV/JSON files are not created.
-- Errors mentioning “permission denied” or missing directories.
+* missing or invalid auth token
+* insufficient permission
+* blocked default request behavior
 
-Actions:
+Fixes:
 
-- Ensure the `--output-dir` exists or can be created by the process.
-- On Windows, check folder permissions for the scheduled task user.
-- On Linux, check directory ownership and permission bits.
+* confirm env vars are set correctly
+* confirm API headers contain required auth
+* validate target access rules
+* for HTML targets that require a custom User-Agent or headers, extend the code (CLI does not configure HTML headers via YAML)
+
+### 404 responses
+
+Common causes:
+
+* invalid URL
+* malformed URL templating
+
+Fixes:
+
+* verify the final URL, especially when using `{external_id}`
+* confirm the base URL/path format
+
+### 429 responses (rate limiting)
+
+Behavior:
+
+* no special handling; likely fails for that source.
+
+Fixes:
+
+* reduce frequency
+* add external throttling
+* implement backoff/rate-limiting in code if needed
+
+### HTML selector returns `None`
+
+Common causes:
+
+* selector mismatch
+* dynamic content not present in raw HTML
+* markup structure changed
+
+Fixes:
+
+* adjust selector to a stable element
+* use `::attr(...)` when appropriate
+* consider a browser automation approach if the content is rendered client-side (out of scope for this template)
+
+### JSON path returns `None`
+
+Common causes:
+
+* wrong path
+* array index out of range
+* API response changed
+
+Fixes:
+
+* capture and inspect the JSON payload
+* update `json_key_map` paths
+* confirm list indexing segments (`items.0.id`)
+
+---
 
 ## Production hardening ideas
-This section lists optional enhancements for stricter environments.
 
-The template intentionally stays minimal. For more demanding environments, you may consider:
+If you need stronger operational controls for demanding targets:
 
-- Integrating a structured logger (e.g. Python’s logging with JSON output).
-- Adding alerting (email/Slack) for hard failures or abnormal validation counts.
-- Storing records in a database in addition to CSV/JSON.
-- Running in a container with a fixed Python/runtime image.
-- Versioning config files and documenting change history.
+* Add exponential backoff + jitter for retries
+* Add per-host rate limiting / politeness delays
+* Make timeouts/retries configurable via YAML
+* Add configurable User-Agent and proxy support
+* Add request-body support for APIs (`json=` / `data=`)
+* Introduce optional vs required field schema (do not treat all unified fields as required)
+* Add structured logging (JSON logs) and per-source timing metrics
+* Add persistence (e.g., SQLite) for incremental runs, deduplication, and audit trails
 
-These are out of scope for the template, but the code is structured to make such extensions straightforward.
+---
+
+## Related documentation
+
+* `README.md` — overview and quickstart
+* `docs/architecture.md` — components and flow
+* `docs/testing.md` — deterministic test strategy
+* `docs/CONFIG_GUIDE.md` — configuration reference
+* `docs/SECURITY_AND_LEGAL.md` — safety, compliance, and usage constraints

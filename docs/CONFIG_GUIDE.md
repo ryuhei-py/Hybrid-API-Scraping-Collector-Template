@@ -1,402 +1,432 @@
-# Configuration guide
-This document explains how to configure the hybrid API and scraping collector using YAML and environment variables.
+# CONFIG_GUIDE
 
-## Configuration files overview
-This section lists the files that control sources and secrets.
+This document defines the **configuration contract implemented by this repository** and explains how to write reliable, testable YAML configs for the Hybrid-API-Scraping-Collector-Template.
 
-### `.env` and environment variables
-Secrets (API keys, tokens, proxies, etc.) should **never** be hard-coded in YAML.
+The template supports:
+- **API collection** (HTTP request + JSON extraction)
+- **HTML collection** (HTTP GET + CSS selector extraction)
+- **Hybrid collection** (API + HTML merged into unified records)
+- **Normalization** (mapping + optional type casting)
+- **Validation** (required-field checks)
+- **Offline testing** (CI runs without live network access)
 
-Steps:
+---
 
-1. Copy the example file:
+## Table of Contents
 
-   ```bash
-   cp .env.example .env
-   ```
+- [Quick reference](#quick-reference)
+- [1. File format and loading rules](#1-file-format-and-loading-rules)
+- [2. Source schema](#2-source-schema)
+- [3. API configuration](#3-api-configuration)
+- [4. HTML configuration](#4-html-configuration)
+- [5. Mapping and normalization](#5-mapping-and-normalization)
+- [6. URL templating via context](#6-url-templating-via-context)
+- [7. Validation and failure modes](#7-validation-and-failure-modes)
+- [8. Complete examples](#8-complete-examples)
+- [9. Practical guidance](#9-practical-guidance)
+- [Related documentation](#related-documentation)
 
-2. Edit `.env` and set real values (this file should be ignored by Git).
+---
 
-In YAML, reference them with `${VAR_NAME}`, for example:
+## Quick reference
 
-```yaml
-headers:
-  Authorization: "Bearer ${EXAMPLE_API_TOKEN}"
-```
-
-The Python code will load `.env` and expand `${...}` placeholders before sending requests.
-
-### YAML configuration files
-The core configuration for the collector lives under the `config/` directory.
-
-- `config/sources.example.yml` — example configuration shipped with the template. Use this as the base for your own config.
-- `config/sources.yml` — your real configuration. Typically you create it by:
-
-  ```bash
-  cp config/sources.example.yml config/sources.yml
-  ```
-
-  and then editing `config/sources.yml`.
-
-Recommended: keep `config/sources.yml` out of version control (e.g. via `.gitignore`) if it contains client-specific details.
-
-## Quick start
-This section outlines the minimal steps to get a working configuration.
-
-- Create your working config:
-
-  ```bash
-  cp config/sources.example.yml config/sources.yml
-  ```
-
-- Fill in `.env`:
-  - API keys (e.g. `EXAMPLE_API_TOKEN`)
-  - Proxy settings (if needed)
-  - Any other secrets referenced in YAML
-- Edit `config/sources.yml`:
-  - Start from the provided example sources
-  - Rename each `id` to something meaningful for your project
-  - Update API endpoints, HTML URLs, selectors, and mappings
-- Run a dry-run or validation command (see `docs/operations.md` for the latest CLI examples).
-  - First: run a “config validation” / “dry-run” mode
-  - Then: run the normal collection to produce a sample CSV in `sample_output/`
-
-If anything fails, the collector will log which source and which part of the config caused the error.
-
-## Unified record schema
-This section explains how raw data is normalized into a consistent schema.
-
-A typical unified record looks like this (conceptually):
-
-```text
-id              # Primary key in this dataset (string)
-source          # Source ID from config (e.g. "example_api")
-source_type     # "api" or "html"
-group           # Optional logical group (e.g. "real_estate", "cars")
-
-external_id     # ID from the original site/API
-name            # Title / name of the entity
-category        # Optional category / type
-price           # Numeric price (if applicable)
-currency        # ISO currency code (e.g. "USD", "JPY")
-url             # Canonical URL for the item
-location        # Optional location field (city, state, etc.)
-collected_at    # ISO-8601 timestamp when the record was collected
-
-# Any additional fields are allowed as long as they are consistent for your use case
-```
-
-The validator module uses a combination of:
-
-- A built-in default schema (core fields above), and/or
-- An optional schema section in `config/sources.yml`
-
-to check:
-
-- Required fields are present
-- Types are coherent (e.g. price is numeric, `collected_at` looks like a timestamp)
-- Values are not obviously invalid (empty IDs, empty URLs, etc.)
-
-You can keep the schema minimal at the beginning and gradually tighten it as you move toward production.
-
-## Top-level YAML structure
-This section shows the overall shape of `config/sources.yml`.
-
-```yaml
-# Global defaults and behavior (optional)
-global:
-  timezone: "Asia/Tokyo"
-  default_currency: "JPY"
-  request_timeout_sec: 10
-  max_retries: 3
-  retry_backoff_sec: 1.0
-  user_agent: "HybridCollector/1.0 (+https://example.com)"
-
-# Optional explicit schema definition for the unified record
-schema:
-  id:
-    type: string
-    required: true
-  source:
-    type: string
-    required: true
-  source_type:
-    type: string
-    required: true
-  external_id:
-    type: string
-    required: true
-  name:
-    type: string
-    required: false
-  price:
-    type: number
-    required: false
-  currency:
-    type: string
-    required: false
-  url:
-    type: string
-    required: false
-  collected_at:
-    type: datetime
-    required: true
-
-# List of all configured sources
-sources:
-  - id: example_api
-    enabled: true
-    kind: api
-    # ...
-  - id: example_html
-    enabled: true
-    kind: html
-    # ...
-```
-
-Note: the exact keys under `global` and `schema` may evolve with the codebase. The shipped `config/sources.example.yml` is always the canonical reference.
-
-## Source definition (common fields)
-This section describes the fields shared by API and HTML sources.
-
-```yaml
-sources:
-  - id: example_api
-    enabled: true
-    kind: api                # "api" or "html"
-    group: "example_group"   # optional logical group
-    tags:                    # optional labels
-      - "demo"
-      - "public_api"
-    notes: "Short human description for this source"
-    # next: api/html config + mapping...
-```
-
-Field reference:
-
-- `id` (string, required) — unique identifier for this source within the config; used in logs and written into the `source` field of unified records.
-- `enabled` (bool, required) — if `false`, the source is ignored without deleting its configuration.
-- `kind` (string, required) — `api` for HTTP JSON APIs, `html` for HTML page scraping.
-- `group` (string, optional) — logical grouping (“cars”, “housing”, “products”); useful when running subsets of sources or for downstream analytics.
-- `tags` (list of strings, optional) — free-form labels you can use for filtering, documentation, or future automation.
-- `notes` (string, optional) — human-readable comments about where the source comes from or any special behavior.
-
-After these common fields, the structure diverges depending on `kind`.
-
-## API sources
-This section explains how to configure API sources.
-
-### Basic structure
-```yaml
-- id: example_api
-  enabled: true
-  kind: api
-  group: "demo"
-
+### Minimum valid config (YAML list)
+```yml
+- id: example
   api:
-    base_url: "https://api.example.com/v1/items"
-    method: GET           # GET, POST, etc.
-    headers:
-      Authorization: "Bearer ${EXAMPLE_API_TOKEN}"
-      Accept: "application/json"
-    params:
-      category: "laptops"
-      page: "{page}"
-      per_page: 50
-    body: {}              # Only for POST/PUT/PATCH if needed
-    items_path: "data.items"   # Where the list of items lives in the JSON
-
-    pagination:
-      strategy: page       # "page" or "none"
-      page_param: page
-      start: 1
-      max_pages: 5         # Safety guard
-
-  mapping:
-    id: "id"                    # JSON path relative to each item
-    external_id: "id"
-    source: "$SOURCE_ID"        # special token
-    source_type: "$SOURCE_KIND" # "api"
-    name: "title"
-    price: "pricing.current"
-    currency: "pricing.currency"
-    url: "urls.detail"
-    collected_at: "$NOW"        # special token
-```
-
-Key sections:
-
-- `api.base_url` (string, required) — base endpoint for the API call. Can be a fixed URL or a URL with placeholders you fill via params or other logic.
-- `api.method` (string, required) — HTTP method (`GET` default, or `POST`, `PUT`, etc.).
-- `api.headers` (mapping, optional) — custom headers to send with each request; values can include `${ENV_VAR}` placeholders.
-- `api.params` (mapping, optional) — query parameters appended to `base_url`; you can use `{page}` or other placeholders for simple pagination.
-- `api.body` (mapping or object, optional) — used for POST / PUT APIs; often not needed for simple collection.
-- `api.items_path` (string, required) — dot-separated path inside the returned JSON where the list of items lives.
-- `api.pagination` (mapping, optional) — simple built-in pagination support; if `strategy` is `none` or omitted, only a single request is issued.
-
-### Mapping JSON to the unified schema
-This subsection explains how to map API JSON fields to unified fields.
-
-Rules:
-
-- Keys in `mapping` = names in the unified schema (`id`, `source`, `price`, etc.).
-- Values = paths inside the JSON item, or special tokens.
-
-Supported patterns (conceptually):
-
-- `simple_field` → top-level key
-- `nested.field` → nested objects
-
-Special tokens:
-
-- `$SOURCE_ID` → automatically replaced by this source’s `id`
-- `$SOURCE_KIND` → `"api"`
-- `$NOW` → current timestamp in ISO-8601 format
-
-Typical example:
-
-```yaml
-mapping:
-  id: "id"
-  external_id: "id"
-  source: "$SOURCE_ID"
-  source_type: "$SOURCE_KIND"
-  name: "title"
-  price: "pricing.current"
-  currency: "pricing.currency"
-  url: "urls.detail"
-  collected_at: "$NOW"
-```
-
-If a path does not exist, the field becomes `null` unless the validator marks it as required.
-
-## HTML scraping sources
-This section explains how to configure HTML sources.
-
-### Basic structure
-```yaml
-- id: example_html
-  enabled: true
-  kind: html
-  group: "demo"
-
+    enabled: false
+    base_url: "https://example.invalid"
   html:
-    url_template: "https://example.com/laptops?page={page}"
-    start_page: 1
-    max_pages: 3
-    allow_redirects: true
-
-  selectors:
-    list: "div.product-card"    # CSS selector for each item container
-
-    fields:
-      external_id: "@data-product-id"              # attribute on the item node
-      name: ".product-title"                       # text from child node
-      price: ".product-price"                      # text
-      currency: ".product-currency"                # text
-      url: "a.product-link::attr(href)"            # attribute on link
-
+    enabled: true
+    url: "https://example.com/items/{external_id}"
+    selectors:
+      title: "h1"
   mapping:
-    id: "external_id"
-    external_id: "external_id"
-    source: "$SOURCE_ID"
-    source_type: "$SOURCE_KIND"
-    name: "name"
-    price: "price"
-    currency: "currency"
-    url: "url"
-    collected_at: "$NOW"
+    unified_fields:
+      title: "html.title"
+````
+
+### Key rules (implemented in code)
+
+* The config file is a **YAML list** (not a top-level `sources:` object).
+* Each list item is one **source**.
+* A source must define at least one of `api` or `html`.
+* If `api.enabled: true`, `api.base_url` is required.
+* If `html.enabled: true`, `html.url` is required.
+* HTML selector extension supported: **`::attr(name)` only**.
+* Mapping expressions must use the prefixes **`api.`** or **`html.`**.
+
+---
+
+## 1. File format and loading rules
+
+### 1.1 YAML root must be a list
+
+The configuration file is a YAML list, where each item describes one source:
+
+```yml
+- id: source-a
+  api: ...
+  html: ...
+  mapping: ...
+- id: source-b
+  api: ...
+  mapping: ...
 ```
 
-Key sections:
+### 1.2 Environment variable expansion
 
-- `html.url_template` (string, required) — base URL (often with a `{page}` placeholder) for pagination. Without pagination, you can omit `{page}` and the `start_page` / `max_pages` keys.
-- `html.start_page` / `html.max_pages` (integers, optional) — controls the page range. If omitted, a default single page is usually scraped (see the shipped example).
-- `selectors.list` (string, required) — CSS selector used to find each “item” container on the page.
-- `selectors.fields` (mapping, required) — for each logical field, a selector or attribute instruction. Common patterns:
-  - `.product-title` → text content of the first matching element
-  - `a.product-link::attr(href)` → value of a specific attribute
-  - `@data-id` → attribute on the item node itself (shorthand)
+All strings in the loaded YAML are expanded using environment variables (recursively). Use this for secrets and environment-specific values:
 
-### Mapping HTML to the unified schema
-This subsection explains how to map HTML fields to unified fields.
-
-Keys: unified schema fields (`id`, `name`, `price`, etc.)
-
-Values: names from `selectors.fields` or special tokens.
-
-```yaml
-mapping:
-  id: "external_id"
-  external_id: "external_id"
-  source: "$SOURCE_ID"
-  source_type: "$SOURCE_KIND"  # "html"
-  name: "name"
-  price: "price"
-  currency: "currency"
-  url: "url"
-  collected_at: "$NOW"
+```yml
+headers:
+  Authorization: "Bearer ${API_TOKEN}"
 ```
 
-If a CSS selector fails to match, the raw field may be `null` and the validator will decide whether that is acceptable.
+Notes:
 
-## Using environment variables in YAML
-This section shows how to inject environment-specific values safely.
+* The CLI does **not** automatically load `.env`. If you use a `.env` file, load it externally (shell) or extend the CLI explicitly.
+* Prefer `${VAR}` placeholders over committing secrets.
 
-As mentioned earlier, you can inject secrets and environment-specific values via `${VAR_NAME}`.
+---
+
+## 2. Source schema
+
+Each list entry follows this structure:
+
+```yml
+- id: string                 # required
+  api: ApiConfig | null      # optional
+  html: HtmlConfig | null    # optional
+  mapping: MappingConfig     # required
+```
+
+### 2.1 Required fields
+
+* `id`
+* `mapping.unified_fields`
+
+### 2.2 Validity rules
+
+A source is considered valid if:
+
+* At least one of `api` or `html` is present, and
+* When present and enabled, the required URL field exists:
+
+  * `api.enabled: true` requires `api.base_url`
+  * `html.enabled: true` requires `html.url`
+
+---
+
+## 3. API configuration
+
+### 3.1 ApiConfig schema
+
+```yml
+api:
+  enabled: true                 # optional (default: true)
+  base_url: "https://..."       # required if enabled
+  method: "GET"                 # optional (default: GET)
+  params:                       # optional
+    q: "keyword"
+  headers:                      # optional
+    Authorization: "Bearer ${API_TOKEN}"
+  json_key_map:                 # optional (recommended if API is enabled)
+    id: "id"
+    user_name: "user.name"
+    first_tag: "tags.0"
+```
+
+### 3.2 JSON extraction (`json_key_map`)
+
+`json_key_map` controls which values are extracted from the JSON response.
+
+* Keys are the names stored in the API extracted value map.
+* Values are dot-separated JSON paths:
+
+  * `a.b.c` traverses nested dict keys
+  * numeric segments (e.g., `0`) index lists when the current node is a list
 
 Examples:
 
-```yaml
-api:
-  headers:
-    Authorization: "Bearer ${EXAMPLE_API_TOKEN}"
-  params:
-    api_key: "${PUBLIC_API_KEY}"
+* `user.name`
+* `items.0.id`
 
+If a path does not exist, extraction returns `null` (no exception).
+
+### 3.3 Timeout and retries (API)
+
+The API client behavior is:
+
+* Timeout: **10 seconds**
+* Max retries: **3**
+* Retries happen on:
+
+  * network exceptions (`RequestException`)
+  * HTTP **5xx** responses
+* No retries on HTTP **4xx**
+* No exponential backoff (retries are immediate)
+
+---
+
+## 4. HTML configuration
+
+### 4.1 HtmlConfig schema
+
+```yml
 html:
-  proxy: "${SCRAPING_PROXY_URL}"
+  enabled: true
+  url: "https://example.com/items/{external_id}"
+  selectors:
+    title: "h1"
+    price: ".price"
+    image_url: "img::attr(src)"
 ```
 
-Guidelines:
+### 4.2 Selector behavior
 
-- Keep `.env` for secrets and local machine overrides.
-- For CI or production, set the same variables at the process or container level.
-- Avoid checking `.env` into version control.
+* Selectors are evaluated using BeautifulSoup CSS selectors (`soup.select(...)`).
+* Only the **first matched element** is used.
+* If nothing matches, the extracted value is `null`.
+* Text extraction uses `get_text(strip=True)`.
 
-## Common patterns and tips
-This section provides practical guidance for adapting the template.
+### 4.3 Supported selector extension: `::attr(name)`
 
-### Safely cloning an existing source
-When adding a new site that looks similar to an existing one:
+The scraper supports one selector extension:
 
-- Copy an existing source block.
-- Change `id` and `group`.
-- Update `api` or `html` settings (endpoint, URL, selectors).
-- Run collection in dry-run mode and inspect the sample CSV.
+* `::attr(name)` extracts an attribute from the first matched element.
 
-This is the fastest way to onboard new Upwork projects using this template.
+Example:
 
-### Dealing with fields that only exist in some sources
-You have several options:
+* `img::attr(src)` extracts the `src` attribute.
 
-- Make the field optional in `schema` (or not listed at all).
-- Set `mapping` only for sources where it exists; for other sources, leave it unmapped.
-- In downstream tools (Excel, BI, etc.), treat missing values as `NULL`.
+Important:
 
-Avoid forcing every source to provide every field if it does not make sense.
+* `::text` is **not supported**. Use plain selectors for text (e.g., `h1`).
 
-### Tightening validation for production
-For portfolio demos, a looser schema is acceptable. For real clients, you may want stricter guarantees:
+### 4.4 Timeout and retries (HTML)
 
-- Mark more fields as required in `schema`.
-- Use the validator to fail fast when required data is missing.
-- Add simple range checks (e.g. price must be positive) either in the validator or downstream.
+The HTML fetcher behavior is:
 
-## Where to go next
-This section links to related documentation for deeper context.
+* Timeout: **10 seconds**
+* Max retries: **3**
+* Retries happen on:
 
-- See `docs/architecture.md` for a structural view of how configuration flows through the pipeline: config loader → API client / HTML scraper → normalizer → validator → exporter.
-- See `docs/operations.md` for CLI commands, example dry-run and production runs, and how to schedule periodic execution.
+  * network exceptions (`RequestException`)
+  * HTTP **5xx** responses
+* No retries on HTTP **4xx**
+* No exponential backoff
 
-Configuration is the main surface you touch when adapting this template to real jobs. Once you understand `config/sources.yml`, adding new sites becomes mostly a YAML-only task.
+---
+
+## 5. Mapping and normalization
+
+### 5.1 MappingConfig schema
+
+```yml
+mapping:
+  unified_fields:
+    id: "api.post_id"
+    title: "html.title"
+    price: "html.price"
+  field_types:
+    price: "float"
+```
+
+### 5.2 Mapping expressions (required format)
+
+Each value in `unified_fields` must reference exactly one source namespace:
+
+* `api.<key>` uses values extracted from the API response
+* `html.<key>` uses values extracted from HTML selectors
+
+Examples:
+
+* `api.sku`
+* `html.title`
+
+If the mapping expression is malformed or the referenced key is missing, the unified value becomes `null`.
+
+### 5.3 Type casting (`field_types`)
+
+Supported type casts:
+
+* `int`
+* `float`
+
+Rules:
+
+* Conversion failures produce `null`.
+* Fields not listed in `field_types` remain as-is (typically strings).
+
+---
+
+## 6. URL templating via context
+
+Both `api.base_url` and `html.url` support Python string formatting:
+
+* `"{external_id}"` style placeholders are resolved using a runtime context dict.
+
+### 6.1 Default CLI context
+
+The CLI supplies the following context:
+
+* `external_id = source.id`
+
+So `{external_id}` is always available in CLI runs.
+
+Example:
+
+```yml
+html:
+  url: "https://example.com/products/{external_id}"
+```
+
+### 6.2 Missing placeholders
+
+If a URL includes a placeholder not present in the context:
+
+* API raises `ApiError` (missing context key)
+* HTML raises `ScrapeError` (missing context key)
+
+---
+
+## 7. Validation and failure modes
+
+### 7.1 Load-time config validation errors
+
+These fail when the config is loaded:
+
+* Missing `id`
+* Missing `mapping` or missing `mapping.unified_fields`
+* `mapping.unified_fields` is not a mapping/dict
+* Both `api` and `html` are absent
+* `api.enabled: true` but `api.base_url` missing
+* `html.enabled: true` but `html.url` missing
+
+### 7.2 Runtime failures (collection-time)
+
+Typical runtime errors include:
+
+* Missing URL placeholder (typo or missing context key)
+* API returns 4xx (fails without retries)
+* HTML returns 4xx (fails without retries)
+* Selector matches nothing (value becomes `null`)
+* Type casting fails (value becomes `null`)
+
+### 7.3 Record validation in CLI runs (important)
+
+The current CLI validation treats **all keys in `mapping.unified_fields` as required**.
+If any unified field value is `null` or empty, the record is flagged as invalid.
+
+If you need optional fields:
+
+* Either exclude them from `unified_fields`, or
+* Extend the validation logic to support optional fields explicitly.
+
+---
+
+## 8. Complete examples
+
+### 8.1 API-only source
+
+```yml
+- id: jsonplaceholder-post-1
+  api:
+    enabled: true
+    base_url: "https://jsonplaceholder.typicode.com/posts/1"
+    json_key_map:
+      post_id: "id"
+      title: "title"
+      user_id: "userId"
+  mapping:
+    unified_fields:
+      id: "api.post_id"
+      title: "api.title"
+      user_id: "api.user_id"
+    field_types:
+      user_id: "int"
+```
+
+### 8.2 HTML-only source
+
+```yml
+- id: example-product
+  html:
+    enabled: true
+    url: "https://example.com/products/{external_id}"
+    selectors:
+      title: "h1"
+      price: ".price"
+      image_url: "img::attr(src)"
+  mapping:
+    unified_fields:
+      title: "html.title"
+      price: "html.price"
+      image_url: "html.image_url"
+    field_types:
+      price: "float"
+```
+
+### 8.3 Hybrid (API + HTML) source
+
+```yml
+- id: hybrid-1
+  api:
+    enabled: true
+    base_url: "https://api.example.com/items/{external_id}"
+    headers:
+      Authorization: "Bearer ${API_TOKEN}"
+    json_key_map:
+      sku: "sku"
+      stock: "inventory.stock"
+  html:
+    enabled: true
+    url: "https://shop.example.com/items/{external_id}"
+    selectors:
+      title: "h1"
+      price: ".price"
+  mapping:
+    unified_fields:
+      sku: "api.sku"
+      stock: "api.stock"
+      title: "html.title"
+      price: "html.price"
+    field_types:
+      stock: "int"
+      price: "float"
+```
+
+---
+
+## 9. Practical guidance
+
+### 9.1 Start from the example config
+
+Use `config/sources.example.yml` as your baseline. Add or modify one source at a time to keep changes reviewable and testable.
+
+### 9.2 Keep unified fields intentional
+
+Because CLI validation treats unified fields as required, avoid adding fields that may legitimately be missing for some sources unless you also adjust validation.
+
+### 9.3 Prefer stable selectors and explicit attributes
+
+* Use stable CSS selectors (avoid brittle DOM paths)
+* Use `::attr(...)` for URLs and images
+* Avoid unsupported selector pseudo-syntax
+
+### 9.4 Secrets handling
+
+* Use `${VAR}` placeholders in YAML
+* Set secrets via environment variables in your runtime environment
+* Never commit real tokens or credentials
+
+---
+
+## Related documentation
+
+* `README.md` — overview and quickstart
+* `docs/architecture.md` — modules and data flow
+* `docs/operations.md` — operational practices and hardening ideas
+* `docs/testing.md` — offline testing approach and CI checks
+* `docs/SECURITY_AND_LEGAL.md` — responsible scraping guidance

@@ -1,400 +1,488 @@
 # Architecture
-This document describes how the template combines API and HTML collection into a unified dataset.
+
+This project is a **config-driven hybrid collector**: it can combine **API responses** and **HTML scraping results** into a single **unified record** per source, then export aggregated results as **CSV** and **JSON**.
+
+The architecture is intentionally small and modular to maximize:
+- adaptability to new targets through configuration
+- deterministic, offline-capable testing in CI
+- clarity of responsibilities across modules
+
+---
+
+## Table of Contents
+
+- [Goals and non-goals](#goals-and-non-goals)
+- [System overview](#system-overview)
+  - [High-level data flow](#high-level-data-flow)
+  - [Component diagram](#component-diagram)
+- [Runtime pipeline](#runtime-pipeline)
+  - [Per-source execution](#per-source-execution)
+  - [Context and URL templating](#context-and-url-templating)
+- [Configuration model](#configuration-model)
+  - [Top-level YAML shape](#top-level-yaml-shape)
+  - [Source schema](#source-schema)
+  - [API schema](#api-schema)
+  - [HTML schema](#html-schema)
+  - [Mapping and typing](#mapping-and-typing)
+  - [Environment variable expansion](#environment-variable-expansion)
+- [Core modules and responsibilities](#core-modules-and-responsibilities)
+- [Error handling and resilience](#error-handling-and-resilience)
+  - [Retry policy](#retry-policy)
+  - [Failure modes](#failure-modes)
+- [Outputs](#outputs)
+- [Testing strategy](#testing-strategy)
+- [Security and responsible use](#security-and-responsible-use)
+- [Extensibility guide](#extensibility-guide)
+- [Known limitations](#known-limitations)
+- [Related documentation](#related-documentation)
+
+---
 
 ## Goals and non-goals
-This section clarifies what the template aims to achieve and what it intentionally excludes.
 
 ### Goals
-This subsection lists the primary objectives of the template.
 
-- Provide a **config-driven template** that can be quickly adapted to real client projects.
-- Combine **multiple heterogeneous sources** (REST APIs + HTML pages) into a single dataset.
-- Keep the codebase **small, readable, and testable**, suitable as a portfolio repo.
-- Make it easy to:
-  - Add or remove sources by editing a **YAML config** instead of code.
-  - Extend with new APIs, sites, or exporters with minimal changes.
-  - Run the whole pipeline via a **single CLI command**.
+- **Config-first execution:** add/modify sources by editing YAML rather than rewriting core logic.
+- **Hybrid acquisition:** support API and HTML collection in the same run for a source.
+- **Deterministic tests:** CI runs without live network dependency (HTTP is mocked).
+- **Separation of concerns:** config → fetch → extract → normalize → validate → export.
+- **Practical exports:** CSV/JSON outputs that downstream pipelines can consume.
 
 ### Non-goals
-This subsection outlines what is intentionally out of scope.
 
-- This is **not** a full ETL platform or workflow engine.
-- It does **not** provide:
-  - Built-in scheduling (cron, Airflow, etc.)—only examples.
-  - Long-term storage (no database by default).
-  - A web UI or dashboard.
-- The template is intentionally minimal so it can be customized per project.
+- **No always-on service:** this is a run-and-exit CLI.
+- **No built-in scheduling:** scheduling is intentionally a stub/example, not runtime behavior.
+- **No persistence layer:** no database or incremental state is shipped by default.
+- **No concurrency:** sequential execution keeps behavior predictable and easier to audit.
+- **No rate limiting/backoff policy enforcement:** hardening ideas exist, but are not implemented by default.
 
-## High-level architecture
-This section explains the layers and overall orchestration of the system.
+---
 
-### Layers
-This subsection introduces the logical layers of the template.
+## System overview
 
-The architecture is organized into five logical layers:
+### High-level data flow
 
-1. **Configuration Layer**
-   - Parses YAML configuration (`config/sources.yml`).
-   - Models sources as Python dataclasses (API, HTML, mapping).
-2. **Collection Layer**
-   - **API client**: executes HTTP requests, extracts JSON fields.
-   - **HTML scraper**: fetches pages, parses DOM, extracts values using CSS selectors.
-3. **Normalization Layer**
-   - Combines API and HTML results into a single **unified record**.
-   - Applies field mapping and type casting.
-4. **Quality Layer**
-   - Validates records (e.g. required fields not empty).
-   - Produces a list of issues for debugging and QA.
-5. **Delivery Layer**
-   - Exports unified records to **CSV/JSON** (and optionally Excel).
-   - Integrates with the CLI to produce artifacts for clients and downstream tools.
+At a high level:
 
-The entire pipeline is orchestrated by a **CLI entrypoint** that ties these layers together.
+1. Load a YAML config describing a list of sources.
+2. For each source:
+   - Optionally fetch API data and extract fields.
+   - Optionally fetch HTML and extract fields.
+   - Normalize extracted values into a unified record (optionally cast types).
+   - Validate required fields.
+3. Export the aggregated list of records.
 
-### Component map
-This subsection lists the key modules and supporting directories.
-
-Code lives under `src/hybrid_collector`:
-
-- `config.py` — configuration dataclasses and YAML loader.
-- `api_client.py` — API client and JSON extraction.
-- `scraper.py` — HTML fetching and parsing.
-- `normalizer.py` — unifies API + HTML into normalized records.
-- `exporter.py` — CSV/JSON(/Excel) exporters.
-- `validator.py` — lightweight record validation.
-- `cli.py` — CLI pipeline (read config → collect → normalize → validate → export).
-- `scheduler_stub.py` — examples for cron / Task Scheduler integration.
-
-Auxiliary directories:
-
-- `config/` — configuration files (e.g. `sources.example.yml`).
-- `sample_output/` — example output (`unified_records.sample.csv`).
-- `docs/` — documentation (this file and others).
-- `tests/` — unit tests per module.
-- `.github/workflows/` — CI configuration stub.
-
-### Data flow
-This subsection visualizes how data moves through the layers.
+### Component diagram
 
 ```mermaid
 flowchart LR
-    A[config/sources.yml] --> B[Configuration Layer<br/>config.py]
-    B --> C[API Client<br/>api_client.py]
-    B --> D[HTML Scraper<br/>scraper.py]
+  A[CLI] --> B[Config Loader]
+  B --> C{For each source}
+  C -->|API enabled| D[ApiClient]
+  C -->|HTML enabled| E[HTML Scraper]
+  D --> F[Normalizer]
+  E --> F[Normalizer]
+  F --> G[Validator]
+  G --> H[Exporter]
+  H --> I[(CSV / JSON)]
+````
 
-    C --> E[API Values]
-    D --> F[HTML Values]
+---
 
-    E --> G[Normalizer<br/>normalizer.py]
-    F --> G
+## Runtime pipeline
 
-    G --> H[Unified Records]
-    H --> I[Validator<br/>validator.py]
-    H --> J[Exporter<br/>exporter.py]
+### Per-source execution
 
-    I --> K[Validation Report (logs)]
-    J --> L[CSV/JSON/Excel Files]
+For each configured `source`:
 
-    subgraph Orchestration
-        M[CLI<br/>cli.py]
-    end
+1. **Context construction**
 
-    A --> M
-    M --> C
-    M --> D
-    M --> G
-    M --> I
-    M --> J
-```
+   * The CLI builds a small `context` dictionary.
+   * Current default context includes:
 
-## Components
-This section describes each layer and its responsibilities.
+     * `external_id`: derived from `source.id`
 
-### Configuration layer (config.py, config/)
-This subsection explains how configuration is modeled and validated.
+2. **API step (optional)**
 
-Responsibilities:
+   * If `api.enabled: true`:
 
-- Define configuration dataclasses, for example:
-  - ApiConfig
-  - HtmlConfig
-  - MappingConfig
-  - SourceConfig
-- Load YAML from `config/sources.yml` (or another file passed via CLI).
-- Resolve environment variables (e.g. `${API_TOKEN}`) for secrets.
-- Validate basic structure and raise a configuration error if required fields are missing.
+     * Format `api.base_url` using `str.format(**context)`
+     * Perform request via `requests.request(method, url, params=..., headers=..., timeout=...)`
+     * Extract selected values using dot-path JSON traversal (`json_key_map`)
 
-Why a separate config layer?
+3. **HTML step (optional)**
 
-- New sources (APIs/sites) can be added without touching code.
-- The same code can be reused across multiple projects just by swapping `sources.yml`.
+   * If `html.enabled: true`:
 
-### Collection layer
-This subsection covers how data is collected from APIs and HTML pages.
+     * Format `html.url` using `str.format(**context)`
+     * Fetch page via `requests.get(url, headers=..., timeout=...)`
+     * Parse with BeautifulSoup and extract fields using CSS selectors (supports `::attr(...)`)
 
-#### API client (api_client.py)
-This sub-subsection outlines HTTP collection from APIs.
+4. **Normalization**
 
-Responsibilities:
+   * Apply `mapping.unified_fields` to produce a unified record.
+   * Mapping expressions reference either `api.*` or `html.*` namespaces.
+   * Apply `mapping.field_types` (optional) to cast values to `int`/`float`.
 
-- Build and execute HTTP requests based on ApiConfig:
-  - URL template (`base_url`) with placeholders (e.g. `{external_id}`).
-  - Method (GET, POST, etc.).
-  - Query parameters and headers.
-- Implement retry logic for transient failures (network errors, 5xx).
-- Parse JSON responses and extract specific fields using dot-separated paths (e.g. `data.price.current`).
-- Return a flat dictionary of API values, for example:
+5. **Validation**
 
-```python
-{
-    "external_id": "12345",
-    "api_price": 19.99,
-    "currency": "USD",
-}
-```
+   * Validate required fields for missing/empty values.
+   * Current CLI behavior treats **all unified fields** as required.
 
-Design notes:
+6. **Export**
 
-- The client is intentionally stateless and simple.
-- It focuses on HTTP + JSON extraction, not on domain logic.
-- Mapping to unified field names is handled later by the normalization layer.
+   * Unless in dry-run mode, write CSV and JSON outputs.
 
-#### HTML scraper (scraper.py)
-This sub-subsection outlines HTML collection and parsing.
+### Context and URL templating
 
-Responsibilities:
+Both API and HTML URLs support Python string formatting:
 
-- Fetch HTML pages using HTTP with retry logic similar to the API client.
-- Allow URL templates with placeholders (e.g. `https://example.com/products/{external_id}`).
-- Parse HTML using BeautifulSoup.
-- Extract values using selectors defined in `HtmlConfig.selectors`, supporting:
-  - Plain selectors: `span.price` → `element.text`.
-  - Attribute selectors: `img.main::attr(src)` → `element['src']`.
-- Return a flat dictionary of HTML values, for example:
+* API: `base_url.format(**context)`
+* HTML: `url.format(**context)`
 
-```python
-{
-    "title": "Example Product",
-    "price": "$19.99",
-    "image_url": "https://example.com/img/12345.jpg",
-}
-```
+If a URL references a placeholder not present in the context, execution fails early with a clear error indicating the missing key.
 
-Design notes:
+---
 
-- The scraper does not try to be a generic crawling framework.
-- It only handles URLs explicitly defined in the config, which matches typical Upwork-style project requirements.
+## Configuration model
 
-### Normalization layer (normalizer.py)
-This subsection explains how data is unified into a common schema.
+### Top-level YAML shape
 
-Responsibilities:
+The configuration file is a **YAML list** of source entries (not a dict).
 
-- Combine outputs from the API client and the HTML scraper into a single record.
-- Use MappingConfig to map fields:
-  - `unified_fields` maps target field names to `api.<key>` or `html.<key>`.
-
-Example:
+A minimal working example (shape-accurate):
 
 ```yaml
-mapping:
-  unified_fields:
-    id: "api.external_id"
-    title: "html.title"
-    price: "api.api_price"
-    currency: "api.currency"
-  field_types:
-    price: "float"
+- id: "example-source"
+  api:
+    enabled: true
+    base_url: "https://example.com/api/items/{external_id}"
+    method: "GET"
+    headers:
+      Authorization: "Bearer ${API_TOKEN}"
+    params:
+      limit: 10
+    json_key_map:
+      title: "data.title"
+      price: "data.price"
+  html:
+    enabled: true
+    url: "https://example.com/items/{external_id}"
+    selectors:
+      image_url: "img.product::attr(src)"
+      description: "div.description"
+  mapping:
+    unified_fields:
+      title: "api.title"
+      price: "api.price"
+      image_url: "html.image_url"
+      description: "html.description"
+    field_types:
+      price: "float"
 ```
 
-For each unified field:
+A tested reference is provided in `config/sources.example.yml`.
 
-- Look up the appropriate source dictionary (`api_values` or `html_values`).
-- Handle missing dictionaries or keys by returning `None`.
-- Apply optional type conversions using `field_types` (e.g. `float`, `int`).
+### Source schema
 
-Why normalize?
+Each source entry supports:
 
-- Downstream tools (Excel, BI, ML) expect a consistent schema.
-- Normalization decouples “how we fetched the data” from “how we present it”.
+* **Required**
 
-### Quality layer (validator.py)
-This subsection covers validation of normalized records.
+  * `id` (string)
+  * `mapping` (object)
+* **Optional**
 
-Responsibilities:
+  * `api` (object)
+  * `html` (object)
 
-- Provide simple, extensible validation of unified records.
+A source must provide at least one of `api` or `html` as an object. Either can be present and disabled with `enabled: false`.
 
-Typical checks:
+### API schema
 
-- Required fields must not be `None` or an empty string.
-- Numeric fields should be convertible to the desired type.
+`api` supports:
 
-Return a list of validation issues, each including:
+* `enabled` (bool, default `true`)
+* `base_url` (string, required when enabled)
+* `method` (string, default `GET`)
+* `params` (dict, optional)
+* `headers` (dict, optional)
+* `json_key_map` (dict, optional)
 
-- Record index.
-- Field name.
-- Message describing the problem.
+#### `json_key_map`: JSON path extraction
 
-Design notes:
+`json_key_map` describes how to extract fields from a JSON response.
 
-- The validation logic is intentionally lightweight.
-- For more complex projects, this module can be extended with:
-  - Cross-field consistency checks.
-  - Range checks (e.g. price > 0).
-  - Business-specific rules.
+* Keys: output field names (the “API-side extracted field keys”)
+* Values: dot-separated paths into the JSON payload
 
-### Delivery layer (exporter.py)
-This subsection describes how results are written out.
+Examples:
 
-Responsibilities:
+* `data.title`
+* `items.0.name` (numeric segments can index into lists)
 
-- Convert a list of unified records into file formats that are easy to share:
-  - CSV (UTF-8)
-  - JSON (array of objects)
-  - Optional Excel (via pandas)
-- Derive column order from the union of keys across all records.
-- Ensure parent directories exist before writing.
+If traversal fails (missing key, wrong type, out-of-range index), the extracted value becomes `null` (not fatal).
 
-Typical outputs:
+### HTML schema
 
-- `sample_output/unified_records.csv`
-- `sample_output/unified_records.json`
+`html` supports:
 
-These files can be attached to Upwork deliveries or imported into BI tools.
+* `enabled` (bool, default `true`)
+* `url` (string, required when enabled)
+* `selectors` (dict[str, str], optional)
 
-### Orchestration (cli.py, scheduler_stub.py)
-This subsection explains how the pipeline is executed end to end.
+#### Selector semantics (implemented)
 
-#### cli.py
-This sub-subsection covers the command-line orchestration layer.
+* Selection is via BeautifulSoup CSS selection (`soup.select(...)`).
+* Only the **first match** is used.
+* Default extraction: `element.get_text(strip=True)`.
+* Attribute extraction: `selector::attr(name)`
+  Example: `img.product::attr(src)`
 
-Responsibilities:
+If a selector matches nothing, the extracted value becomes `null`.
 
-- Provide a user-facing entrypoint that runs the entire pipeline:
-  - Parse CLI arguments:
-    - `--config` (path to YAML).
-    - `--output-dir` (where to place CSV/JSON).
-    - `--dry-run` (run without writing files).
-  - Load sources via `config.py`.
-  - For each source:
-    - Build a context dict (e.g. `{"external_id": source.id}`).
-    - Call API client and HTML scraper.
-    - Normalize into a unified record.
-    - Run validation over all records.
-    - Log or print validation issues.
-  - If not `--dry-run`, export to CSV/JSON.
+### Mapping and typing
 
-#### scheduler_stub.py
-This sub-subsection lists scheduling examples for production use.
+`mapping` supports:
 
-Responsibilities:
+* `unified_fields` (dict[str, str], required)
 
-- Document how to schedule the CLI in production environments.
-- Provide example snippets for:
-  - Unix cron.
-  - Windows Task Scheduler.
+  * Values are mapping expressions pointing into extracted namespaces:
 
-The module exists primarily as documentation in code form, not as a runtime dependency.
+    * `api.<field_key>`
+    * `html.<field_key>`
+* `field_types` (dict[str, str], optional)
 
-## Execution lifecycle
-This section outlines the typical steps when running the collector.
+  * Supported types: `int`, `float`
+  * Conversion failures yield `null` (not an exception)
 
-A typical execution of the collector follows this lifecycle:
+**Note on mapping expressions:** the normalizer expects expressions with at least one `.` segment (namespace + key). Invalid expressions resolve to `null`.
 
-1. Start CLI
+### Environment variable expansion
 
-    ```bash
-    python -m hybrid_collector.cli --config config/sources.yml --output-dir sample_output
-    ```
+All strings in YAML are recursively expanded using environment variables (e.g., `${API_TOKEN}`).
 
-2. Configuration
-   - `load_sources()` parses the YAML file.
-   - Dataclasses are created for each source.
-3. Collection
-   - For each source:
-     - API client fetches JSON and extracts API values.
-     - HTML scraper fetches and parses HTML, extracting HTML values.
-4. Normalization
-   - `normalize_record()` merges API/HTML values according to mapping rules.
-   - A list of unified records is constructed.
-5. Validation
-   - Validation checks are run over all records.
-   - Issues are logged or printed to stderr/stdout.
-6. Export
-   - Records are written to CSV/JSON (and optionally Excel) under `output_dir`.
-7. Exit
-   - The CLI exits with success or a non-zero code on fatal errors.
+Important operational note:
 
-## Extensibility
-This section describes how to extend the template safely.
+* The CLI does **not** automatically load `.env`. Environment variables must be set by the runtime environment (or loaded externally).
 
-The template is designed to be extended in small, focused ways.
+---
 
-### Adding a new source
-This subsection covers how to add new API or HTML sources.
+## Core modules and responsibilities
 
-- Add a new entry to `config/sources.yml` with:
-  - API and/or HTML configuration.
-  - Mapping rules for unified fields.
-- Optionally extend tests to cover the new configuration shape.
-- No changes to core modules are required unless you introduce new patterns.
+The implementation is deliberately decomposed into small modules:
 
-### Adding a new API pattern
-This subsection covers adding specialized API handling.
+* `src/hybrid_collector/cli.py`
 
-- If a new API requires special handling (e.g. OAuth, pagination):
-  - Add helper functions or methods to `api_client.py`.
-  - Keep the configuration model backward-compatible where possible.
-  - Extend tests in `tests/` to cover the new behavior.
+  * Orchestrates the pipeline: load config → per-source run → normalize → validate → export.
+  * Builds the runtime context (`external_id`).
+  * Supports dry-run mode (skips file writes).
 
-### Adding a new output format
-This subsection covers adding new delivery formats.
+* `src/hybrid_collector/config.py`
 
-- Implement additional exporter functions in `exporter.py` (e.g. Parquet, database writer).
-- Optionally add a CLI flag (e.g. `--export-format`) to switch formats.
+  * Defines config dataclasses:
 
-### Integrating with a database
-This subsection explains how to store results in a database.
+    * `SourceConfig`, `ApiConfig`, `HtmlConfig`, `MappingConfig`
+  * Loads YAML and validates structure/types.
+  * Expands environment variables in the loaded config.
+  * Intentionally does not validate “semantic correctness” of selectors or mapping beyond structural checks.
 
-- Add a new module (e.g. `storage.py`) to insert unified records into a DB.
-- Call it from `cli.py` after validation and before/after file export.
+* `src/hybrid_collector/api_client.py`
 
-## Error handling and observability
-This section summarizes error handling and logging practices.
+  * Performs API requests via `requests.request(...)`.
+  * Extracts fields using dot-path traversal (`extract_json_value`).
+  * Raises explicit errors on missing URL context keys and HTTP failures.
 
-### Error handling
-This subsection lists expected error behaviors.
+* `src/hybrid_collector/scraper.py`
 
-- Configuration errors: surface early with clear messages (missing keys, invalid types).
-- HTTP errors:
-  - Retries on transient issues (network errors, 5xx).
-  - Fail fast on 4xx unless explicitly configured otherwise.
-- Parsing errors:
-  - JSON parse failures → API error with context.
-  - Missing HTML elements → `None` values that can be caught by validation.
+  * Performs HTML fetch via `requests.get(...)`.
+  * Parses with BeautifulSoup and extracts fields using selectors.
+  * Supports `::attr(...)`; otherwise extracts stripped text.
 
-### Logging and debugging
-This subsection suggests how to observe runs.
+* `src/hybrid_collector/normalizer.py`
 
-- The template can be wired to Python’s logging module (not mandatory).
-- Recommended logging points:
-  - Start/end of each run.
-  - Per-source success/failure.
-  - Summary of validation issues.
-  - Output file locations.
+  * Merges API and HTML extracted fields into a unified record using `mapping.unified_fields`.
+  * Applies optional type casting via `mapping.field_types`.
 
-## Design trade-offs
-This section calls out key decisions and their pros/cons.
+* `src/hybrid_collector/validator.py`
 
-- No database by default  
-  Pros: simple setup, easy to clone and run, fewer dependencies.  
-  Cons: no built-in history or time-series analysis.
-- Config-driven vs. hard-coded  
-  Pros: easier reuse and adaptation to new sites/APIs.  
-  Cons: some complexity in configuration files (YAML must be managed carefully).
-- Single-process pipeline  
-  Pros: straightforward to understand and debug.  
-  Cons: for very large source lists, you may want parallelization (e.g. asyncio, multiprocessing), which is left as an exercise.
+  * Validates required fields:
 
-This balance keeps the repository small but realistic, suitable both as a starting point for production work and as a clear portfolio example.
+    * missing key, `null`, or empty string are treated as invalid
+  * Current CLI treats all unified fields as required.
+
+* `src/hybrid_collector/exporter.py`
+
+  * Exports aggregated records to:
+
+    * `unified_records.csv` (header is union of keys across all records)
+    * `unified_records.json` (pretty printed, UTF-8, `ensure_ascii=False`)
+
+* `src/hybrid_collector/scheduler_stub.py`
+
+  * Example helper for cron expressions.
+  * Not used by runtime pipeline.
+
+---
+
+## Error handling and resilience
+
+### Retry policy
+
+Both API and HTML fetchers implement a minimal retry policy:
+
+* Retries on:
+
+  * `requests.exceptions.RequestException` (network-level failures)
+  * HTTP **5xx** responses
+* Fail-fast on:
+
+  * HTTP **4xx** responses (after `raise_for_status()`)
+* Backoff:
+
+  * no exponential backoff or jitter; retries are immediate
+
+The defaults are intentionally conservative for predictability in templates. For production usage, consider adding backoff/jitter and rate limiting (see [Extensibility guide](#extensibility-guide)).
+
+### Failure modes
+
+* **Missing context key in URL template**
+
+  * Explicit error indicating which key is missing.
+
+* **HTTP 4xx**
+
+  * Fail-fast; no retry.
+
+* **HTTP 5xx / transient network errors**
+
+  * Retries up to max retries; then raises error.
+
+* **JSON key path misses**
+
+  * Extracted field becomes `null`.
+
+* **Selector misses**
+
+  * Extracted field becomes `null`.
+
+* **Type conversion errors**
+
+  * Field becomes `null`.
+
+* **Validation failures**
+
+  * Missing/empty required fields are reported as validation issues.
+
+---
+
+## Outputs
+
+Default export artifacts (when not dry-run):
+
+* `unified_records.csv`
+
+  * Columns: union of all keys across the record list.
+* `unified_records.json`
+
+  * Array of unified records.
+  * UTF-8 and human-readable formatting.
+
+---
+
+## Testing strategy
+
+The test suite is designed to be deterministic and CI-friendly:
+
+* Unit tests cover:
+
+  * Config loading and environment expansion
+  * JSON path extraction behavior
+  * HTML extraction behavior (including `::attr(...)`)
+  * Normalization and type casting
+  * Validation logic
+  * Export formatting
+  * CLI dry-run behavior
+* Integration test:
+
+  * Runs the pipeline against `config/sources.example.yml`
+  * Mocks all HTTP calls so no live network is required
+
+CI runs:
+
+* `ruff check`
+* `pytest`
+
+---
+
+## Security and responsible use
+
+This repository is a template and must be used responsibly:
+
+* Follow site Terms of Service and applicable legal requirements.
+* Respect robots directives where relevant.
+* Avoid collecting sensitive personal data unless you have explicit authorization.
+* Keep secrets out of version control; use environment variables.
+
+For detailed guidance, see `docs/SECURITY_AND_LEGAL.md`.
+
+---
+
+## Extensibility guide
+
+Common extensions (kept intentionally out of the default template):
+
+1. **Rate limiting and politeness**
+
+   * add per-host delays, jitter, and maximum request rate
+   * implement exponential backoff for retries
+
+2. **Config-driven network controls**
+
+   * configurable timeout, max retries, User-Agent, proxy settings
+
+3. **Optional vs required fields**
+
+   * support required/optional field declarations in config
+   * validate only required fields in the CLI
+
+4. **Config semantic validation**
+
+   * validate mapping expressions (`api.*` / `html.*`)
+   * validate selector syntax (and reject unsupported patterns early)
+
+5. **Persistence and incremental runs**
+
+   * store records in SQLite/Postgres
+   * deduplicate by stable keys
+   * incremental “only new/changed” record collection
+
+6. **Concurrency**
+
+   * add limited parallelism with safe throttling and backpressure
+
+7. **Scheduling**
+
+   * integrate with cron/systemd/GitHub Actions
+   * connect `scheduler_stub.py` to a real scheduling mechanism
+
+---
+
+## Known limitations
+
+* Sequential execution only (no concurrency).
+* No built-in rate limiting or backoff/jitter.
+* `.env` is not auto-loaded; environment variables must be managed externally.
+* Config validation is structural; selector/mapping semantics are not fully validated.
+* CLI treats all unified fields as required (optional fields require enhancement).
+* No persistence/state store is included by default.
+
+---
+
+## Related documentation
+
+* `README.md` — product overview and usage
+* `docs/CONFIG_GUIDE.md` — configuration guide (ensure it matches the implemented YAML list schema)
+* `docs/operations.md` — operational guidance and hardening ideas
+* `docs/testing.md` — local + CI testing instructions
+* `docs/SECURITY_AND_LEGAL.md` — security, compliance, and responsible use guidance

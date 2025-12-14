@@ -1,309 +1,465 @@
 # Hybrid-API-Scraping-Collector-Template
-This document outlines the purpose, features, and usage of the hybrid API and HTML data collection template.
 
-## Table of contents
-This section lists navigation links for quick reference.
+[![CI](https://github.com/ryuhei-py/Hybrid-API-Scraping-Collector-Template/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ryuhei-py/Hybrid-API-Scraping-Collector-Template/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/ryuhei-py/Hybrid-API-Scraping-Collector-Template)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue?logo=python&logoColor=white)](pyproject.toml)
+[![Ruff](https://img.shields.io/badge/lint-ruff-blue?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
+[![Pytest](https://img.shields.io/badge/tests-pytest-blue?logo=pytest&logoColor=white)](https://docs.pytest.org/)
 
-- [Overview](#overview)
-- [Use cases](#use-cases)
-- [Features](#features)
-- [Architecture overview](#architecture-overview)
-- [Project structure](#project-structure)
+
+A config-driven Python template for collecting and unifying data from **REST APIs (JSON)** and **HTML pages (CSS selectors)** into a single, validated record set—exported as **CSV + JSON**.
+
+This repository is intentionally small and practical: a clear CLI entrypoint, deterministic (offline) tests, CI lint/test gates, and well-defined extension seams for client-specific collectors.
+
+---
+
+## Table of Contents
+
+- [Highlights](#highlights)
+- [What It Produces](#what-it-produces)
 - [Quickstart](#quickstart)
+- [Installation](#installation)
 - [Configuration](#configuration)
-- [CLI usage](#cli-usage)
+  - [Config File Shape](#config-file-shape)
+  - [Source Schema](#source-schema)
+  - [API Collection](#api-collection)
+  - [HTML Collection](#html-collection)
+  - [Unified Mapping](#unified-mapping)
+  - [Type Casting](#type-casting)
+  - [Environment Variables](#environment-variables)
+  - [URL Templating Context](#url-templating-context)
+- [Usage](#usage)
+- [How It Works](#how-it-works)
+- [Validation Behavior](#validation-behavior)
+- [Retries and Error Handling](#retries-and-error-handling)
+- [Outputs](#outputs)
 - [Testing](#testing)
-- [Safety & legal](#safety--legal)
-- [Related templates](#related-templates)
+- [Operations](#operations)
+- [Security, Compliance, and Responsible Use](#security-compliance-and-responsible-use)
+- [Project Layout](#project-layout)
+- [Limitations](#limitations)
+- [Extension Points](#extension-points)
 - [License](#license)
+- [Related Documentation](#related-documentation)
 
-## Overview
-This section explains why the template exists and what problems it solves.
+---
 
-Many real-world data projects need to combine multiple sources:
+## Highlights
 
-- Public or private **REST APIs** that return structured JSON.
-- **HTML pages** that expose additional fields not available via API.
-- A **unified dataset** that downstream tools (Excel, BI dashboards, ML pipelines) can easily consume.
+- **Hybrid collection**: collect from an API and an HTML page in one run, then unify both into a single schema.
+- **Config-first**: add or modify sources by editing YAML (minimal code changes).
+- **Deterministic tests**: unit + integration-style tests mock HTTP; CI does not rely on live endpoints.
+- **Modular architecture**: config → fetch → normalize → validate → export are separated into dedicated modules.
+- **Practical CLI**: one command to run the pipeline; predictable CSV/JSON outputs.
 
-This template provides a clean, reusable structure for:
+---
 
-1. Describing data sources in a **single YAML configuration file**.
-2. Collecting data from both **API endpoints** and **HTML pages**.
-3. **Normalizing** heterogeneous fields into a common schema.
-4. **Validating** records for missing or inconsistent fields.
-5. Exporting to **CSV/JSON/Excel** for analysis or delivery to clients.
+## What It Produces
 
-The goal is not to be a full-blown ETL framework, but a **lightweight, production-style template** that you can adapt to many projects with minimal changes.
+For each configured source, the pipeline emits **one unified record** (one record per source). Results are written to the selected output directory:
 
-## Use cases
-This section lists situations where the template is a good fit.
+- `unified_records.csv`
+- `unified_records.json`
 
-- Enriching product data: API provides IDs/prices while HTML pages contain titles, images, or category labels.
-- Monitoring content across multiple sources: API for core metadata + HTML for SEO fields or UI-only flags.
-- Internal tools that need to pull from partner APIs and public websites into a single master dataset.
-- Proof-of-concept ETL jobs where you want to demonstrate **good engineering practices** (tests, configs, docs) without introducing heavy frameworks.
-
-If you need **time-series monitoring and alerts**, see the companion [Rate-Monitor-Template](https://github.com/ryuhei-py/Rate-Monitor-Template) instead.
-
-## Features
-This section summarizes the key capabilities of the template.
-
-- **Hybrid data collection**
-  - REST API client with JSON path extraction.
-  - HTML scraper powered by CSS selectors.
-
-- **Config-driven behavior**
-  - All sources and field mappings are defined in `config/sources.yml`.
-  - No hard-coded URLs or selectors inside the business logic.
-
-- **Normalization layer**
-  - Maps `api.*` and `html.*` fields into a unified record schema.
-  - Optional type casting (e.g. `float`, `int`) per field.
-
-- **Validation**
-  - Simple pluggable checks to ensure required fields are present.
-  - Produces a list of validation issues for quick debugging and QA.
-
-- **Exporters**
-  - CSV output (UTF-8) ready for Excel or Google Sheets.
-  - JSON output for programmatic consumption.
-  - Optional Excel export via `pandas`.
-
-- **Tests and CI-ready layout**
-  - `pytest` test suite per module (config, API client, scraper, normalizer, exporter, validator, CLI).
-  - `src/` layout suitable for packaging and reuse.
-
-## Architecture overview
-This section describes how data flows through the system components.
-
-At a high level, the collector runs the following pipeline:
-
-1. **Configuration**  
-   `config/sources.yml` describes each data source: API endpoint details, HTML URL and CSS selectors, and mapping rules to unified fields.
-2. **API Client (`api_client.py`)**  
-   Executes HTTP requests with retries, extracts values from JSON using dot-separated paths, and returns a flat `dict` of API-level fields.
-3. **HTML Scraper (`scraper.py`)**  
-   Fetches HTML pages with retry logic, parses content with BeautifulSoup, and extracts text or attributes using CSS selectors.
-4. **Normalizer (`normalizer.py`)**  
-   Merges `api_values` and `html_values` into a single record and applies field mapping with optional type casting.
-5. **Validator (`validator.py`)**  
-   Runs lightweight checks (e.g. required fields not empty) and outputs a list of issues for logging or debugging.
-6. **Exporter (`exporter.py`)**  
-   Writes the final list of records to CSV/JSON/Excel.
-7. **CLI (`cli.py`)**  
-   Orchestrates the entire pipeline and accepts command-line options for config path, output directory, and dry-run mode.
-
-## Project structure
-This section shows the layout of files to help you navigate the repository.
-
-```text
-Hybrid-API-Scraping-Collector-Template/
-├─ src/
-│  └─ hybrid_collector/
-│     ├─ __init__.py
-│     ├─ config.py          # YAML config loading + dataclasses
-│     ├─ api_client.py      # API requests + JSON extraction
-│     ├─ scraper.py         # HTML fetching + parsing
-│     ├─ normalizer.py      # Merge API/HTML into unified records
-│     ├─ exporter.py        # CSV/JSON(/Excel) export
-│     ├─ validator.py       # Basic record validation
-│     ├─ cli.py             # Command-line orchestrator
-│     └─ scheduler_stub.py  # Scheduling examples (cron, Task Scheduler)
-│
-├─ config/
-│  └─ sources.example.yml   # Example configuration for sources
-│
-├─ docs/
-│  ├─ architecture.md
-│  ├─ operations.md
-│  ├─ testing.md
-│  ├─ CONFIG_GUIDE.md
-│  └─ SECURITY_AND_LEGAL.md
-│
-├─ sample_output/
-│  └─ unified_records.sample.csv
-│
-├─ tests/
-│  ├─ conftest.py
-│  ├─ test_config.py
-│  ├─ test_api_client.py
-│  ├─ test_scraper.py
-│  ├─ test_normalizer.py
-│  ├─ test_exporter.py
-│  └─ test_validator.py
-│
-├─ .github/
-│  └─ workflows/
-│     └─ ci.yml
-│
-├─ .env.example
-├─ .gitignore
-├─ LICENSE
-├─ pyproject.toml
-├─ README.md
-└─ requirements.txt
-```
-Some files may start as minimal stubs and evolve as you adapt the template to a specific project.
+---
 
 ## Quickstart
-This section explains how to set up and run the project.
+
+```bash
+# 1) Create and activate a virtual environment
+python -m venv .venv
+# Windows:
+#   .venv\Scripts\activate
+# macOS/Linux:
+#   source .venv/bin/activate
+
+# 2) Install dependencies and the package
+pip install -U pip
+pip install -r requirements.txt
+pip install -e .
+
+# 3) Run using the example config
+python -m hybrid_collector.cli \
+  --config config/sources.example.yml \
+  --output-dir sample_output
+````
+
+Dry-run (skips export but still performs fetch/scrape/normalize/validate):
+
+```bash
+python -m hybrid_collector.cli --config config/sources.example.yml --dry-run
+```
+
+---
+
+## Installation
 
 ### Requirements
-Python 3.11+
 
-git
+* Python 3.11+ recommended (see `.github/workflows/ci.yml` for the currently tested versions)
 
-A virtual environment tool (venv, conda, etc.)
-
-### 1. Clone and set up the environment
-Run the following commands to clone the repository and create a virtual environment.
+### Install
 
 ```bash
-git clone https://github.com/ryuhei-py/Hybrid-API-Scraping-Collector-Template.git
-cd Hybrid-API-Scraping-Collector-Template
-
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv/Scripts/activate
-
 pip install -r requirements.txt
+pip install -e .
 ```
 
-### 2. Create your configuration file
-Copy the example configuration to create your working config.
-
-```bash
-cp config/sources.example.yml config/sources.yml
-```
-Edit config/sources.yml to define your own API endpoints, HTML pages, and field mappings. See docs/CONFIG_GUIDE.md for details.
-
-### 3. Run the collector (dry-run)
-Execute the CLI in dry-run mode to validate configuration without writing files.
-
-```bash
-python -m hybrid_collector.cli \
-  --config config/sources.yml \
-  --output-dir sample_output \
-  --dry-run
-```
-Dry-run mode will execute the pipeline but skip writing output files, which is useful while iterating on config.
-
-### 4. Run the collector (with output)
-Run the CLI normally to generate output files.
-
-```bash
-python -m hybrid_collector.cli \
-  --config config/sources.yml \
-  --output-dir sample_output
-```
-By default, the CLI writes:
-
-sample_output/unified_records.csv
-
-sample_output/unified_records.json
-
-(Exact filenames may vary depending on your implementation.)
+---
 
 ## Configuration
-This section outlines how configuration is organized.
 
-All behavior is driven by `config/sources.yml`.
+### Config File Shape
 
-Each entry in sources typically contains:
+The config file is a **YAML list**. Each list item defines one source.
 
-id: logical identifier for the source.
+○ Correct:
 
-api: API configuration
+```yaml
+- id: my_source
+  api: { ... }
+  html: { ... }
+  mapping: { ... }
+```
 
-base_url, method, params, headers
+× Not supported by this implementation:
 
-json_key_map: JSON paths → field names.
+```yaml
+sources:
+  - id: my_source
+    ...
+```
 
-html: HTML configuration
+---
 
-url: page URL template
+### Source Schema
 
-selectors: CSS selectors per field (supports ::attr(name)).
+Each source supports:
 
+* `id` (required): string identifier
+* `api` (optional): API collection settings
+* `html` (optional): HTML collection settings
+* `mapping` (required): unified schema + type rules
+
+A source must include **at least one** of `api` or `html`.
+
+---
+
+### API Collection
+
+API data is extracted from JSON using dot-path expressions.
+
+```yaml
+api:
+  enabled: true              # default: true
+  base_url: "https://example.com/api/items/{external_id}"
+  method: "GET"              # default: GET
+  params: {}
+  headers: {}
+  json_key_map:
+    item_id: "id"
+    title: "data.title"
+    price: "data.pricing.amount"
+    first_tag: "tags.0"
+```
+
+**JSON path behavior**
+
+* Dot-separated traversal supports dictionaries (`data.title`)
+* Numeric segments are treated as list indices (`tags.0`)
+* Missing keys/invalid traversal yields `null` (not an exception)
+
+---
+
+### HTML Collection
+
+HTML fields are extracted using CSS selectors (BeautifulSoup + soupsieve).
+
+```yaml
+html:
+  enabled: true              # default: true
+  url: "https://example.com/items/{external_id}"
+  selectors:
+    page_title: "h1"
+    canonical_url: "link[rel='canonical']::attr(href)"
+```
+
+**Selector behavior**
+
+* Uses the **first** match for each selector
+* No match yields `null`
+* Attribute extraction is supported via: `::attr(name)`
+* Only `::attr(...)` is implemented (there is no separate `::text` operator; plain selectors extract text)
+
+---
+
+### Unified Mapping
+
+`mapping.unified_fields` defines the output schema and where each field comes from:
+
+* `"api.<key>"` reads from the API extraction result dictionary
+* `"html.<key>"` reads from the HTML extraction result dictionary
+
+```yaml
 mapping:
+  unified_fields:
+    id: "api.item_id"
+    title: "api.title"
+    price: "api.price"
+    page_title: "html.page_title"
+    canonical_url: "html.canonical_url"
+```
 
-unified_fields: unified field name → "api.<key>" or "html.<key>".
+If a mapping expression is invalid or cannot be resolved, the resulting unified value becomes `null`.
 
-field_types: optional type hints ("float", "int", etc.).
+---
 
-A full, field-by-field explanation is provided in docs/CONFIG_GUIDE.md.
+### Type Casting
 
-## CLI usage
-This section shows how to run the CLI with common options.
+Optionally cast unified fields using `mapping.field_types`:
 
-Basic usage:
+```yaml
+mapping:
+  unified_fields:
+    id: "api.item_id"
+    price: "api.price"
+  field_types:
+    id: "int"
+    price: "float"
+```
+
+Supported types:
+
+* `int`
+* `float`
+
+Failed casts produce `null` (not an exception).
+
+---
+
+### Environment Variables
+
+All string values in the YAML are processed with environment variable expansion (e.g., `${API_TOKEN}`).
+
+Example:
+
+```yaml
+api:
+  headers:
+    Authorization: "Bearer ${API_TOKEN}"
+```
+
+Notes:
+
+* `.env.example` is provided as a reference.
+* The CLI does **not** automatically load `.env`. Provide environment variables via your shell, CI secrets, or a wrapper script.
+
+---
+
+### URL Templating Context
+
+`api.base_url` and `html.url` support Python `str.format(**context)` placeholders.
+
+The CLI currently provides:
+
+* `{external_id}` → the source `id`
+
+Example:
+
+```yaml
+api:
+  base_url: "https://example.com/api/items/{external_id}"
+html:
+  url: "https://example.com/items/{external_id}"
+```
+
+If a URL uses an unknown placeholder, that collector fails for the source and the pipeline continues to the next source.
+
+---
+
+## Usage
+
+### Run a collection
 
 ```bash
 python -m hybrid_collector.cli \
-  --config config/sources.yml \
-  --output-dir sample_output \
-  [--dry-run]
+  --config config/sources.example.yml \
+  --output-dir output/runs/demo_001
 ```
-Options:
 
---config: Path to the YAML configuration file. Default: `config/sources.yml`.
-
---output-dir: Directory where output files are written. Default: `sample_output`.
-
---dry-run: If set, runs the pipeline but skips writing files.
-
-You can integrate this command with cron, Windows Task Scheduler, or any other scheduler. See `docs/operations.md` for examples.
-
-## Testing
-This section describes how to run tests for this template.
-
-Run all tests:
+### Dry-run (no export)
 
 ```bash
-pytest
+python -m hybrid_collector.cli --config config/sources.example.yml --dry-run
 ```
-Typical test modules:
 
-test_config.py: config loading and validation.
+---
 
-test_api_client.py: request logic, retries, JSON extraction.
+## How It Works
 
-test_scraper.py: HTML parsing and selector behavior.
+For each source:
 
-test_normalizer.py: merging of API/HTML data and type casting.
+1. Load and validate YAML config
+2. Fetch API JSON (if enabled)
+3. Fetch and parse HTML (if enabled)
+4. Normalize API + HTML values into a unified record via `mapping.unified_fields`
+5. Validate required fields (see next section)
+6. Export all unified records to CSV + JSON (unless `--dry-run`)
 
-test_exporter.py: CSV/JSON output shape.
+---
 
-test_validator.py: validation rules.
+## Validation Behavior
 
-For more details, see `docs/testing.md`.
+* The CLI treats **all keys in `mapping.unified_fields` as required**.
+* Validation issues are reported to stdout, but the CLI does not fail the run by default.
+* If a source errors during collection (API/HTML), it is skipped; other sources continue.
 
-## Safety & legal
-This section highlights legal and ethical considerations.
+---
 
-Hybrid data collection can involve legal and ethical constraints:
+## Retries and Error Handling
 
-APIs: respect the provider’s terms of service, authentication requirements, and rate limits.
+Both the API and HTML collectors retry on:
 
-HTML scraping: review robots.txt, site policies, and local regulations before scraping.
+* network exceptions (`requests` errors)
+* HTTP **5xx** responses
 
-Personal data: avoid collecting or storing sensitive personal information unless strictly necessary and always follow applicable privacy laws.
+They do **not** retry on HTTP **4xx** responses.
 
-This repository is provided as a technical template only. See `docs/SECURITY_AND_LEGAL.md` for more guidance on safe use.
+Defaults:
 
-## Related templates
-This section lists companion repositories that complement this template.
+* `timeout = 10s`
+* `max_retries = 3`
 
-Product-List-Scraper-Template
-Generic product listing scraper with YAML-driven selectors and CSV/Excel output.
+Notes:
 
-Rate-Monitor-Template
-Production-style template for scheduled price/rate monitoring with SQLite time-series storage and optional Slack notifications.
+* Retries are immediate (no exponential backoff/jitter in the current implementation).
 
-Amazon Price Monitor Tool
-Full production example that inspired these templates.
+---
+
+## Outputs
+
+Exports are written to the output directory:
+
+* `<output-dir>/unified_records.csv`
+* `<output-dir>/unified_records.json`
+
+Important:
+
+* Filenames are fixed; re-running to the same output directory overwrites these files.
+* For repeatable runs, use a timestamped output directory.
+
+Example (macOS/Linux):
+
+```bash
+python -m hybrid_collector.cli \
+  --config config/sources.example.yml \
+  --output-dir "output/runs/$(date +%Y%m%d_%H%M%S)"
+```
+
+---
+
+## Testing
+
+Run tests:
+
+```bash
+pytest -q
+```
+
+Run lint:
+
+```bash
+ruff check src tests
+```
+
+Tests are designed to be deterministic: HTTP is mocked so CI does not rely on live endpoints.
+
+---
+
+## Operations
+
+This template is designed to run as a single-shot job:
+
+* local runs for development and iteration
+* scheduled runs via cron / Task Scheduler / CI runners
+* output artifacts collected downstream (S3, Drive, a data pipeline, etc.)
+
+A lightweight scheduling reference is included in `scheduler_stub.py` (documentation-oriented; not a daemon).
+
+---
+
+## Security, Compliance, and Responsible Use
+
+This repository is a general-purpose collector template. You are responsible for:
+
+* collecting only data you are authorized to access
+* respecting website Terms of Service
+* respecting robots.txt policies (this tool does not enforce robots.txt)
+* implementing appropriate request pacing and identification headers (e.g., User-Agent) where required
+
+Do not use this template to bypass access controls (CAPTCHAs, authentication barriers, paywalls, or other restrictions).
+
+---
+
+## Project Layout
+
+```text
+config/
+  sources.example.yml
+docs/
+  architecture.md
+  CONFIG_GUIDE.md
+  operations.md
+  testing.md
+  SECURITY_AND_LEGAL.md
+src/hybrid_collector/
+  cli.py
+  config.py
+  api_client.py
+  scraper.py
+  normalizer.py
+  validator.py
+  exporter.py
+  scheduler_stub.py
+tests/
+  test_*.py
+```
+
+---
+
+## Limitations
+
+* One unified record per source (no built-in pagination to produce multiple records per source).
+* No persistence layer (no SQLite/Postgres; export-only).
+* No built-in rate limiting or exponential backoff/jitter.
+* No structured logging/metrics (stdout prints only).
+* `.env` is not auto-loaded (environment variables must be set externally).
+
+---
+
+## Extension Points
+
+Common, high-value extensions:
+
+* **Rate limiting + backoff**: add exponential backoff with jitter and per-host throttling.
+* **Optional vs required fields**: configure required fields instead of treating all unified keys as required.
+* **Pagination / multi-record output**: produce multiple rows per source for list endpoints.
+* **Persistence**: store raw + unified records in SQLite/Postgres; add incremental runs and deduplication.
+* **Observability**: structured logs, per-source timings, and metrics hooks.
+* **Additional exporters**: wire the existing Excel exporter into the CLI; add Parquet/Arrow.
+
+---
 
 ## License
-This section states the licensing for the project.
 
-This project is licensed under the MIT License.
+MIT (see `LICENSE`).
+
+---
+
+## Related Documentation
+
+* `docs/architecture.md` — architecture and data flow
+* `docs/CONFIG_GUIDE.md` — configuration guidance
+* `docs/operations.md` — operational run patterns
+* `docs/testing.md` — running tests and CI checks
+* `docs/SECURITY_AND_LEGAL.md` — security and legal considerations

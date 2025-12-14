@@ -1,289 +1,303 @@
-# Security and legal considerations
-This document explains security, ethical, and legal considerations for using and extending the hybrid API and scraping collector template.
+# SECURITY_AND_LEGAL
 
-The code in this repository is generic and does not target any particular website or API. Once you connect it to real systems and real data, you become responsible for compliance, safety, and lawful use.
+This repository is a **template** for collecting and consolidating data from a combination of **HTTP APIs** and **public-facing HTML pages**, then exporting normalized records (CSV/JSON, optional Excel). Because it performs outbound network requests and produces data files, safe and compliant operation depends on how it is configured and used.
 
-## Scope and responsibilities
-This section clarifies what the template does and what you must handle.
+This document defines the security, legal/ethical, and operational safety expectations for using and extending this template.
 
-### What this template is designed to do
-This subsection lists the intended capabilities of the template.
+---
 
-- Define sources in `config/sources.yml` for HTTP API endpoints (JSON responses) and HTML pages that may require scraping.
-- Map source-specific fields into a unified record schema using `mapping.unified_fields`.
-- Optionally normalise types using `mapping.field_types`.
-- Run a collection pipeline that:
-  - Sends HTTP requests to APIs and/or web pages.
-  - Parses responses into Python dictionaries.
-  - Transforms them into uniform records.
-  - Exports the combined dataset to CSV / JSON / Excel using `hybrid_collector.exporter`.
-- Optionally run a validation step (e.g. via `hybrid_collector.validator`) to detect missing or inconsistent fields before export.
+## 1. Scope and non-legal-advice disclaimer
 
-By default, the template:
+- This document is provided for **informational purposes only** and does **not** constitute legal advice.
+- Laws, regulations, and contractual restrictions vary by jurisdiction and data source.
+- Operators are responsible for ensuring compliance with:
+  - applicable laws and regulations,
+  - website and API Terms of Service (ToS) and acceptable-use policies,
+  - data licensing and intellectual property constraints,
+  - organizational security and privacy policies.
 
-- Does not hard-code any real services or URLs.
-- Does not include browser automation, CAPTCHA solving, or login flows.
-- Does not attempt to bypass security controls, paywalls, or rate limits.
+---
 
-### Your responsibility as an implementer
-This subsection outlines what you must control when using the template.
+## 2. Responsible use policy
 
-- Which systems you connect (websites, APIs, internal services).
-- How often you access those systems.
-- What data you collect and store.
-- How the data is used (analytics, dashboards, resale, competitor analysis).
-- How you communicate this behavior to clients, partners, and end users.
+### 2.1 Intended use
 
-Ensure usage complies with each service’s Terms of Service or API license agreement, respects technical and legal boundaries, and aligns with applicable laws and contracts.
+This template is designed for lawful and authorized collection, including:
+- retrieving data from **APIs you are authorized to access** (first-party, partner, or licensed endpoints),
+- extracting data from **public pages where automated access and reuse are permitted**,
+- building a project-specific collector with clear scope, permission, and operational safeguards,
+- running periodic collection in a manner that is **polite**, **rate-limited**, and **non-disruptive**.
 
-## APIs, website terms of service, and robots.txt
-This section covers obligations for APIs and HTML sources.
+### 2.2 Prohibited and high-risk use
 
-### API terms and licenses
-This subsection highlights typical API rules and risks.
+Do not use this template to:
+- bypass access controls (authentication barriers, paywalls, IP blocks, CAPTCHAs) without explicit permission,
+- scrape sites that prohibit automated access in ToS/robots directives unless you have written authorization,
+- collect, infer, or aggregate sensitive personal data without a lawful basis and legitimate purpose,
+- generate excessive traffic that could degrade availability or violate acceptable-use policies,
+- engage in deceptive behavior (spoofing identities, misrepresenting purpose, evading enforcement).
 
-Many public or partner APIs include:
+---
 
-- Rate limits and quotas.
-- Restrictions on caching or redistribution.
-- Commercial vs. non-commercial usage rules.
-- Attribution and branding requirements.
+## 3. Security posture overview (what this template does and does not do)
 
-Before you connect this template to an API:
+### 3.1 What it does
 
-1. Read the API’s documentation, ToS, and license.
-2. Confirm whether you may call the API programmatically, aggregate data with other sources, store data long-term, and redistribute the resulting dataset to third parties.
-3. Ensure your configuration respects documented rate limits, authentication rules, and any regional or industry-specific constraints.
+- Performs outbound HTTP requests to:
+  - configured **API endpoints** (method/headers/params),
+  - configured **HTML pages** (CSS selector extraction).
+- Consolidates API and HTML results using mapping rules into a unified record.
+- Exports results to local files:
+  - **CSV**
+  - **JSON**
+  - optional **Excel** output (via pandas)
 
-Violating API rules can result in key revocation, account suspension, contractual disputes, or legal claims.
+### 3.2 What it does not do by default (operator responsibility)
 
-### Website ToS and robots.txt
-This subsection explains expectations for scraping HTML pages.
+This template is intentionally lightweight. It does not include, by default:
+- persistent storage (database, state store, deduplication),
+- authentication flows (OAuth token refresh, login automation),
+- built-in global throttling or per-host rate limiting (beyond simple retries),
+- centralized secrets management or key vault integration,
+- structured logging with redaction and long-term retention controls,
+- multi-tenant isolation or sandboxing for untrusted configuration sources.
 
-- Website Terms of Service may prohibit automated access or scraping and may restrict data reuse.
-- `robots.txt` is technically advisory but widely treated as the norm for crawler behavior; it may list disallowed paths or recommended crawl delays.
+If you deploy this template in production or handle sensitive data, add appropriate controls.
 
-Good practice:
+---
 
-- Check each site’s ToS before scraping.
-- Inspect `https://example.com/robots.txt` to understand the site’s expectations.
-- Avoid scraping paths that are clearly disallowed.
-- Follow any documented frequency or rate guidance where possible.
+## 4. Secrets and credential handling
 
-If uncertain, obtain explicit permission or consult legal counsel.
+### 4.1 Supported mechanism: environment-variable expansion in YAML
 
-## Rate limiting and load management
-This section covers responsible scheduling and load control.
+Configuration strings support **environment variable expansion** (e.g., `${API_TOKEN}`), enabling secrets to be kept out of version control.
 
-### Request frequency and scheduling
-This subsection addresses timing of requests.
+Recommended practices:
+- store secrets in environment variables (or a secrets manager that injects env vars),
+- keep `.env` files **local and uncommitted**,
+- never commit:
+  - API keys/tokens,
+  - cookies or session identifiers,
+  - `Authorization` header values,
+  - private/internal endpoints that should not be disclosed.
 
-- Choose a collection schedule that fits your business need (e.g. hourly or daily runs).
-- Avoid many requests per second to the same host, large bursts across many pages, or repeatedly crawling entire sites without prior agreement.
-- If you configure many sources in `sources.yml`, consider staggering calls, grouping low-priority sources less frequently, and applying per-source and global rate limits.
+### 4.2 Least privilege, rotation, and revocation
 
-### Backoff and error handling
-This subsection suggests handling overload signals.
+- use the minimum scope required (read-only where possible),
+- prefer short-lived credentials when supported,
+- rotate credentials periodically,
+- revoke credentials immediately if exposure is suspected.
 
-- Back off when you see HTTP 429 (Too Many Requests) or 5xx errors.
-- Treat increased latency as a signal to slow down.
-- Stop or delay collection when repeated errors occur.
+### 4.3 Avoid accidental leakage
 
-The template focuses on clarity rather than advanced throttling; add any backoff, concurrency control, or queueing you require explicitly in your fetch/collector layer.
+- do not place secrets in CLI arguments (which may be recorded in shell history),
+- avoid printing sensitive headers or payloads in logs,
+- treat exported files as potentially sensitive; do not embed credentials in outputs.
 
-## Authentication, secrets, and configuration
-This section explains how to handle credentials safely.
+---
 
-### Never commit secrets
-This subsection reminds you to protect sensitive values.
+## 5. Data privacy and sensitive data handling
 
-- Never commit API keys, tokens, passwords, session cookies, private URLs, or internal endpoints to the repository.
-- Use environment variables (e.g. `API_KEY`, `API_TOKEN`), a local `.env` file that is not tracked by Git, or secret stores provided by your cloud or CI platform.
+### 5.1 Data minimization
 
-### Environment variable expansion in configuration
-This subsection notes how secrets are injected.
+Collect only what is necessary:
+- limit fields to what your business requirement needs,
+- avoid collecting entire pages or full API payloads unless required,
+- prefer normalized derived fields over raw dumps when feasible.
 
-`hybrid_collector.config.load_sources` supports environment variable expansion via `os.path.expandvars`, so configuration like:
+### 5.2 Personally identifiable information (PII)
 
-```yaml
-params:
-  api_key: "${API_KEY}"
-headers:
-  Authorization: "Bearer ${API_TOKEN}"
-```
+If your use case includes PII:
+- confirm a lawful basis for collection and processing,
+- define retention limits and deletion procedures,
+- restrict access to outputs and logs,
+- consider anonymization/pseudonymization or aggregation.
 
-resolves values from the current environment.
+### 5.3 Output handling (CSV/JSON/Excel)
 
-Best practice:
+Outputs can be easily copied, emailed, or synced unintentionally.
+Recommended safeguards:
+- write outputs to access-controlled directories,
+- encrypt at rest if required by policy,
+- do not publish raw outputs or sample outputs that may contain third-party content or PII,
+- ensure backups follow retention and access rules.
 
-- Keep `sources.yml` generic and never hard-code raw secrets.
-- Load environment variables from a safe location at runtime.
-- Limit who has access to machines where these variables are stored.
+---
 
-### Logged-in or private areas
-This subsection covers access to authenticated resources.
+## 6. Terms of Service, robots, permissions, and licensing
 
-If you extend the template to access data behind a login:
+Automated collection is subject to both technical and contractual constraints.
 
-- Confirm you have a contractual and legal right to access that data.
-- Confirm you are not breaching user agreements or employment policies.
-- Implement authentication securely: avoid embedding credentials directly into YAML, prefer short-lived tokens, service accounts, or delegated credentials.
+### 6.1 Permission checks (operator responsibility)
 
-## Data handling and privacy
-This section outlines considerations for different data sensitivities.
+Before collecting from any site or API:
+- review the ToS / acceptable-use policy,
+- review API documentation and licensing terms,
+- review `robots.txt` directives (where applicable),
+- confirm you have permission to store and reuse the data.
 
-Because this template is generic, sensitivity depends on your use case. Examples:
+If policies prohibit automation or reuse, safer alternatives include:
+- using an official API,
+- obtaining written permission,
+- negotiating a data-sharing agreement.
 
-- Public product catalogues → generally low sensitivity.
-- Partner APIs with business data → medium to high sensitivity.
-- Personal data (customers, leads, health, finance) → high sensitivity and often regulated.
+### 6.2 Intellectual property and database rights
 
-### Personal and regulated data
-This subsection lists privacy frameworks to consider.
+Collected content may be subject to:
+- copyright,
+- database rights,
+- contractual restrictions and licensing terms.
 
-If you use the template with personal or regulated data, you may be affected by frameworks such as GDPR (EU), CCPA/CPRA (California), or other local laws.
+Operators are responsible for ensuring they have rights to:
+- access the data,
+- store and process it,
+- redistribute it (if applicable).
 
-Depending on context, consider:
+---
 
-- Minimising the fields you collect.
-- Pseudonymisation or anonymisation.
-- Data retention limits and deletion policies.
-- Data subject access or erasure requests.
-- Cross-border transfers and processor agreements.
+## 7. Rate limiting and load management
 
-For such use cases, seek specialist legal and compliance advice.
+### 7.1 Polite collection principles
 
-### Exported datasets
-This subsection covers handling of output files.
+- keep request rates low and stable,
+- avoid bursty traffic,
+- avoid peak-hour load where possible,
+- honor server signals such as:
+  - `429 Too Many Requests`,
+  - `Retry-After` headers.
 
-By default, combined records are exported via `hybrid_collector.exporter` to:
+### 7.2 Current behavior (important operational note)
 
-- CSV
-- JSON
-- Optionally Excel
+This template includes retry logic for network failures and server-side errors, but:
+- there is **no exponential backoff or jitter** by default,
+- there is **no per-host throttling** by default,
+- execution is single-run and typically single-threaded.
 
-Treat these exported files as data assets:
+For production-grade deployments, it is strongly recommended to add:
+- exponential backoff + jitter on retries,
+- configurable per-host delays and budgets,
+- request ceilings per run,
+- caching and incremental collection to reduce load.
 
-- Avoid committing real client or user data to public repositories.
-- Store files in locations with appropriate filesystem permissions.
-- When sharing with clients, document data sources, how it was collected, and any licensing or usage limitations.
+---
 
-If you later introduce databases or data lakes, apply the same or stricter controls there.
+## 8. Network and transport security
 
-## Logs, debugging, and sample data
-This section advises on safe logging and demos.
+- HTTPS requests rely on standard TLS verification as implemented by `requests` defaults.
+- Network behavior should be tuned to your target environment:
+  - appropriate timeouts,
+  - controlled retry strategy,
+  - controlled egress destinations.
 
-When debugging or demonstrating the collector, avoid:
+If operating in enterprise environments, consider:
+- outbound allowlisting of target domains,
+- proxy configuration,
+- custom CA bundles only when required and controlled.
 
-- Logging full API responses.
-- Dumping entire HTML pages.
-- Committing “sample_output” that is actually real client data.
+---
 
-Good practice:
+## 9. Configuration safety and SSRF-like misuse prevention
 
-- Log only what is necessary to troubleshoot.
-- Scrub or mask identifiers where possible.
-- Keep `sample_output` synthetic or anonymised.
-- Ensure CI logs or error traces do not contain secrets or live data.
+Because URLs, headers, and selectors are configuration-driven, treat configuration as a privileged artifact.
 
-## Typical use cases and risk patterns
-This section highlights common scenarios and related risks.
+Recommended practices:
+- restrict who can modify configuration in production environments,
+- review config changes through pull requests,
+- avoid accepting configs from untrusted users.
 
-### Aggregating public catalogues and price data
-Common usage: combining official APIs with public HTML pages to build a unified list of products, prices, and availability indicators.
+If you evolve this template into a service, add safeguards:
+- destination allowlists (approved domains),
+- validation for URL schemes (`https://` only),
+- blocking access to internal networks and metadata endpoints,
+- strict placeholder validation for any templated URLs.
 
-Risks and mitigations:
+---
 
-- E-commerce and marketplace sites often restrict scraping in their ToS.
-- Some vendors claim IP rights over catalogue content or derived datasets.
+## 10. Logging, observability, and auditability
 
-Mitigation strategies:
+### 10.1 Logging goals
 
-- Prefer official APIs, affiliate feeds, or export tools when available.
-- Review each platform’s ToS carefully before scraping.
-- Keep frequency and scale modest unless you have explicit approval.
-- Avoid republishing large portions of another party’s catalogue without permission.
+- make runs traceable (which sources ran, when, and outcomes),
+- enable debugging without disclosing sensitive information,
+- support operational monitoring (counts, errors, latency).
 
-### Competitor and market intelligence
-Some users may want this template for competitor monitoring. This can be sensitive.
+### 10.2 Recommended enhancements
 
-Consider:
+- structured logs with levels (`INFO`, `WARNING`, `ERROR`),
+- redaction filters for sensitive headers (`Authorization`, `Cookie`) and secret-like values,
+- per-run metadata:
+  - start/end timestamp,
+  - source identifiers,
+  - record counts exported,
+  - per-source timing.
 
-- Fair competition and antitrust rules in your jurisdiction.
-- Contractual obligations (e.g. employees or contractors restricted by policy).
-- Reputational impact if data collection is perceived as aggressive or deceptive.
+---
 
-Where risk is non-trivial, involve legal and compliance teams early.
+## 11. Dependency and supply-chain security
 
-### Client projects (e.g. Upwork)
-For freelancing, clarify responsibilities with the client.
+### 11.1 Dependency hygiene
 
-- Ensure the statement of work clarifies which sites/APIs will be accessed, whether the client has rights to use that data, and who is responsible for ongoing compliance.
-- Provide the client with configuration files (e.g. `sources.yml`), a simple explanation of how the collector works, and a written reminder to use it within legal and contractual boundaries.
+- keep dependencies updated, especially networking and parsing libraries,
+- prefer version pinning for production deployments to reduce drift,
+- track changes through CI and review.
 
-This positions you as a responsible engineer rather than just a scraper implementer.
+### 11.2 CI and scanning recommendations
 
-## Bot detection and anti-scraping defenses
-This section warns against evasion tactics.
+In addition to linting and unit tests, consider adding:
+- automated dependency update tooling,
+- vulnerability scanning (e.g., `pip-audit`) as part of CI,
+- secrets scanning to prevent accidental commits of tokens.
 
-This template is not intended to bypass CAPTCHAs, advanced bot detection systems, IP blocking or geo-fencing, or login/paywall protections.
+---
 
-Attempting to defeat such mechanisms may:
+## 12. Known limitations and operator responsibilities
 
-- Breach Terms of Service.
-- Violate computer misuse or anti-hacking laws in some jurisdictions.
-- Damage your or your client’s reputation and relationships.
+### 12.1 Known limitations (by design)
 
-If you encounter explicit anti-bot mechanisms:
+- file-based exports only (no built-in persistent state or deduplication),
+- minimal validation of mapping expressions and selectors (incorrect configs may produce `None` values),
+- no built-in throttling/backoff beyond basic retries,
+- `.env` loading is operator-managed unless explicitly integrated into your runtime.
 
-- Stop and reassess.
-- Explore official integration options (APIs, data feeds, partnerships).
-- Seek explicit written permission if needed.
+### 12.2 Operator responsibilities (required for safe use)
 
-Do not use this template as a base for CAPTCHA-solving or evasion tooling.
+- confirm permission to access and reuse data (ToS/robots/API/license),
+- enforce rate limiting and operational monitoring appropriate to the target,
+- protect secrets and sanitize logs,
+- protect output files and manage retention,
+- ensure privacy compliance for collected data.
 
-## Client communication and transparency
-This section encourages clear communication with stakeholders.
+---
 
-When presenting this template in a portfolio or proposal, emphasize that:
+## 13. Vulnerability reporting
 
-- The system is config-driven and neutral by default.
-- You plan to configure it within legal and ethical boundaries.
-- You will check ToS and API documentation, respect robots.txt where applicable, prefer official APIs when they exist, and document data sources clearly.
+If you discover a security vulnerability in this repository:
+- report it with clear reproduction steps and impact,
+- avoid publishing exploit details until a fix is available,
+- include environment details (OS, Python version, dependency versions).
 
-Including a short “responsible usage” section in client proposals reinforces these points.
+---
 
-## Optional security hardening
-This section lists additional controls for stricter environments.
+## 14. License and third-party rights
 
-Depending on sensitivity, you may want to strengthen security further:
+- This repository is distributed under the license in `LICENSE`.
+- Third-party data collected using this template may be subject to separate restrictions.
+- Do not assume that “publicly visible” implies “free to reuse.”
 
-- **Transport security:** ensure all HTTP requests use `https` whenever possible and validate TLS certificates by default.
-- **Timeouts and resource limits:** set strict timeouts on network calls; cap concurrency or total requests per run.
-- **Input validation:** validate `sources.yml` content beyond the basic checks (allowed HTTP methods, URL format, field type definitions).
-- **Dependency management:** keep libraries (HTTP clients, HTML parsers, pandas, etc.) up to date and monitor for known vulnerabilities.
-- **Operational controls:** run the collector in a restricted environment (e.g. container with limited permissions) and separate development, staging, and production.
+---
 
-These measures are optional but expected in more mature or regulated environments.
+## 15. Practical compliance checklist
 
-## Disclaimer
-This section states the limits of this guidance.
+### Before running
+- [ ] ToS / acceptable-use policy reviewed and permits automation.
+- [ ] `robots.txt` reviewed (where applicable) and does not prohibit the intended collection.
+- [ ] API terms and data licensing reviewed (rate limits, redistribution rules).
+- [ ] Secrets are stored in environment variables (not committed).
+- [ ] Output directory is access controlled.
+- [ ] Request rate is configured to be polite and non-disruptive.
 
-This document provides general security and legal guidance for the hybrid API and scraping collector template. It:
-
-- Is not exhaustive.
-- Cannot cover all jurisdictions, industries, or platforms.
-- Does not constitute legal advice.
-
-For substantial, commercial, or high-risk deployments—especially those involving personal data, proprietary or paid data sources, or high-volume collection—consult a qualified legal professional, the Terms of Service or licenses of each target system, and your client’s internal policies and compliance team.
-
-## Summary
-This section reiterates key points to remember.
-
-- The template is technically neutral; your configuration defines the risk.
-- Respect ToS, API licenses, and robots.txt, and respect rate limits and load constraints.
-- Protect secrets (API keys, tokens) and any sensitive or valuable data you collect.
-- Avoid bypassing security or anti-bot protections and avoid committing real data or secrets to public repositories.
-- Communicate clearly with clients about data sources and responsibilities.
-
-Used responsibly, this template can serve as a clean, professional foundation for hybrid API and web scraping projects that are both technically solid and aligned with real-world legal and ethical constraints.
+### After running
+- [ ] Outputs do not contain unintended secrets or sensitive personal data.
+- [ ] Logs do not contain tokens, cookies, or Authorization headers.
+- [ ] Retention and deletion policies are applied.
+- [ ] If exposure is suspected, credentials are rotated/revoked and outputs are secured.
