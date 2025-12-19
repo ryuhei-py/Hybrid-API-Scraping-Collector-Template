@@ -44,7 +44,10 @@ def fetch_html(
         except requests.exceptions.HTTPError as exc:
             raise ScrapeError(f"HTTP error while fetching {url} (status {last_status})") from exc
 
-        return response.text
+        # Prefer requests' encoding when it’s trustworthy; otherwise fall back to apparent_encoding.
+        enc = (response.encoding or "").lower()
+        if not enc or enc in {"iso-8859-1", "latin-1", "latin1"}:
+            enc = (response.apparent_encoding or "utf-8").lower()
 
     raise ScrapeError(f"Failed to fetch HTML from {url} (status {last_status})") from last_error
 
