@@ -23,7 +23,7 @@ def export_to_csv(records: list[dict[str, Any]], path: str | Path) -> None:
             if key not in fieldnames:
                 fieldnames.append(key)
 
-    with path.open("w", encoding="utf-8-sig", newline="") as f:
+    with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(records)
