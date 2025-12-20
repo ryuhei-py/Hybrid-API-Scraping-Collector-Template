@@ -13,6 +13,18 @@ This repository is intentionally small and practical: a clear CLI entrypoint, de
 
 ---
 
+## Demo Screenshots
+
+* Demo Screenshots
+
+| Config (API + HTML → unified schema) | CLI run (export 100 records) | Output preview (CSV in Excel) |
+| --- | --- | --- |
+| <img src="docs/img/readme/01_hybrid_config_api_html_unified_fields.png" width="300" alt="Example YAML config combining API + HTML sources and unified field mapping" /> | <img src="docs/img/readme/02_cli_run_export_100_records_csv_json.png" width="300" alt="CLI run exporting unified records to CSV and JSON (100 records)" /> | <img src="docs/img/readme/03_output_preview_excel_unified_records.png" width="300" alt="unified_records.csv opened in Excel (title, price_gbp, availability, upc)" /> |
+
+> Demo sources shown: JSONPlaceholder + Books to Scrape (public test sites). Use your own endpoints/targets for real projects.
+
+---
+
 ## Table of Contents
 
 - [Highlights](#highlights)
