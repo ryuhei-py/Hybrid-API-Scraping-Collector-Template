@@ -44,10 +44,24 @@ def fetch_html(
         except requests.exceptions.HTTPError as exc:
             raise ScrapeError(f"HTTP error while fetching {url} (status {last_status})") from exc
 
-        # Prefer requests' encoding when it’s trustworthy; otherwise fall back to apparent_encoding.
-        enc = (response.encoding or "").lower()
-        if not enc or enc in {"iso-8859-1", "latin-1", "latin1"}:
-            enc = (response.apparent_encoding or "utf-8").lower()
+        encoding = getattr(response, "encoding", None)
+        apparent_encoding = getattr(response, "apparent_encoding", None)
+
+        if hasattr(response, "encoding"):
+            normalized_encoding = (encoding or "").lower()
+            if (not normalized_encoding or normalized_encoding in {"iso-8859-1", "latin-1", "latin1"}) and apparent_encoding:
+                response.encoding = apparent_encoding
+
+        html_text = getattr(response, "text", None)
+        if html_text is not None:
+            return html_text
+
+        content = getattr(response, "content", None)
+        if content is not None:
+            fallback_encoding = getattr(response, "encoding", None) or "utf-8"
+            return content.decode(fallback_encoding, errors="replace")
+
+        raise ScrapeError(f"Failed to fetch HTML from {url}: missing response body")
 
     raise ScrapeError(f"Failed to fetch HTML from {url} (status {last_status})") from last_error
 
